@@ -45,8 +45,12 @@ sudo apt-get remove libfdt-de
    export TARGET=AidoSDR
    ```
 
-  
-
+Enter the hdl directory and switch to the 2023_R2 branch
+```
+cd aidosdr-fw/plutosdr-fw/hdl
+git checkout 2023_R2
+cd ../../../
+```
 ### Patch
 
 After completing the above steps, start to Patch.
