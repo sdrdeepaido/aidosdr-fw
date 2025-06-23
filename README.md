@@ -1,5 +1,5 @@
 # AidoSDRpatch
-This Repository is used to make Microphase software radio device firmware. 
+This Repository is used to make AidoSDR software radio device firmware. 
 
 
 
@@ -24,7 +24,7 @@ sudo apt-get remove libfdt-de
 	- v0.39
 		
 		```sh
-		git clone -b v0.39 --recursive https://github.com/MicroPhase/antsdr-fw-patch.git
+		git clone -b v0.39 --recursive https://github.com/sdrdeepaido/aidosdr-fw.git
 		```
 2. Toolchain
 
@@ -52,7 +52,7 @@ sudo apt-get remove libfdt-de
 After completing the above steps, start to Patch.
 
 ```sh
-cd aidosdr-patch
+cd aidosdr-fw
 ```
 
    ```sh
@@ -65,13 +65,13 @@ cd aidosdr-patch
 If you patch is successfully applied, you can see the following information.
 
 ```txt
-jcc@jcc:~/work/Git/mp/antsdr-fw-patch$ sh patch.sh e200
+AIdo_sdr/aidosdr-fw$ sh patch.sh AidoSDR
 Patch check...
  ...
  ...
  Makefile               |   29 +++++++-
- scripts/antsdre200.its |  174 ++++++++++++++++++++++++++++++++++++++++++++++++
- scripts/antsdre200.mk  |   10 +++
+ scripts/AidoSDR.its |  174 ++++++++++++++++++++++++++++++++++++++++++++++++
+ scripts/AidoSDR.mk  |   10 +++
  3 files changed, 211 insertions(+), 2 deletions(-)
 Patch...
 ...
@@ -92,7 +92,7 @@ sudo -E make
 After the firmware building finished, you will see below file in the build folder. These files are used for flash updating.(This is e200 device)
 
 ```txt
-Ido_sdr/antsdr-fw-patch/plutosdr-fw$ ls -AGhl build
+AIdo_sdr/aidosdr-fw/plutosdr-fw$ ls -AGhl build
 总计 572M
 -rw-r--r-- 1 root  15M  6月 11 17:46 AidoSDR.dfu
 -rw-r--r-- 1 root  15M  6月 11 17:47 AidoSDR.frm
@@ -135,11 +135,11 @@ After the firmware building finished, you can build the SD card boot image for d
 make sdimg
 ```
 
-You will see the SD boot image in the build_sdimg folder. You can just  copy all these files in that folder into a SD card, plug the SD card  into the ANTSDR, set the jumper into SD card boot mode.
+You will see the SD boot image in the build_sdimg folder. You can just  copy all these files in that folder into a SD card, plug the SD card  into the AidoSDR, set the jumper into SD card boot mode.
 
 ## Update Flash by DFU
 
-DFU mode is just for ant e310, e200 is unsupport. If your device is e310, You can update the flash by DFU. Set the jumper into Flash Boot mode.  When device is power up, push the DFU button, and then, you will see the both led in the device will turn green, now it's time to update the  flash. You should change into the build folder first,and plug a micro USB into  the OTG interface. After that, you should run the following command.
+DFU mode is available for AidoSDR, you can update the flash through DFU mode. Set the jumper to Flash Boot mode. After the device is powered on, press the DFU button, you will see both LED indicators in the device turn green, and now you can update the flash. You need to go to the build folder first, and then plug the Micro USB into the OTG port. Then, run the following command.
 
 ```sh
 sudo dfu-util -a firmware.dfu -D ./AidoSDR.dfu
