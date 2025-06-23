@@ -24,7 +24,7 @@ sudo apt-get remove libfdt-de
 	- v0.39
 		
 		```sh
-		git clone -b v0.39 --recursive https://github.com/sdrdeepaido/aidosdr-fw.git
+		git clone --recursive https://github.com/sdrdeepaido/aidosdr-fw.git
 		```
 2. Toolchain
 
