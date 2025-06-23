@@ -89,7 +89,7 @@ cd plutosdr-fw
 sudo -E make
 ```
 
-After the firmware building finished, you will see below file in the build folder. These files are used for flash updating.(This is e200 device)
+After the firmware building finished, you will see below file in the build folder. These files are used for flash updating.
 
 ```txt
 AIdo_sdr/aidosdr-fw/plutosdr-fw$ ls -AGhl build
