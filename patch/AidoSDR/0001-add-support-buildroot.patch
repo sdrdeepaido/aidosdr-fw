@@ -1,6 +1,6 @@
-From dbae77a6a84821794e7a472708a15947218672cc Mon Sep 17 00:00:00 2001
+From 473bf4515d63d5c0e899bf33d9ebd709591b933d Mon Sep 17 00:00:00 2001
 From: wjx <3570534440@qq.com>
-Date: Mon, 9 Jun 2025 17:38:20 +0800
+Date: Sat, 5 Jul 2025 16:24:26 +0800
 Subject: [PATCH] add-support-buildroot
 
 ---
@@ -9,7 +9,7 @@ Subject: [PATCH] add-support-buildroot
  board/AidoSDR/S20urandom                   |   29 +
  board/AidoSDR/S21misc                      |   36 +
  board/AidoSDR/S23udc                       |  175 +++
- board/AidoSDR/S40network                   |  149 +++
+ board/AidoSDR/S40network                   |  153 +++
  board/AidoSDR/S41network                   |   30 +
  board/AidoSDR/S45msd                       |   75 ++
  board/AidoSDR/S98autostart                 |   21 +
@@ -62,7 +62,7 @@ Subject: [PATCH] add-support-buildroot
  board/AidoSDR/wpa_supplicant/functions.sh  | 1006 +++++++++++++++++
  board/AidoSDR/wpa_supplicant/ifupdown.sh   |  172 +++
  configs/zynq_AidoSDR_defconfig             |   72 ++
- 58 files changed, 5031 insertions(+)
+ 58 files changed, 5040 insertions(+)
  create mode 100644 board/AidoSDR/S10mdev
  create mode 100644 board/AidoSDR/S15watchdog
  create mode 100644 board/AidoSDR/S20urandom
@@ -439,10 +439,10 @@ index 0000000000..202347f001
 +
 diff --git a/board/AidoSDR/S40network b/board/AidoSDR/S40network
 new file mode 100644
-index 0000000000..4082ab1982
+index 0000000000..21791a13a6
 --- /dev/null
 +++ b/board/AidoSDR/S40network
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,153 @@
 +#!/bin/sh
 +#
 +# Start the network....
@@ -494,6 +494,10 @@ index 0000000000..4082ab1982
 +	then
 +		echo -e "iface eth0 inet static" >> $IFAC
 +		echo -e "\taddress $ETH_IPADDR\n""\tnetmask $ETH_NETMASK\n" >> $IFAC
++		if [ -n "$ETH_GATEWAY" ] 
++		then 
++			echo -e "\tgateway $ETH_GATEWAY" >> $IFAC
++		fi
 +	else
 +		echo -e "iface eth0 inet dhcp\n" >> $IFAC
 +	fi
@@ -2566,7 +2570,7 @@ index 0000000000..09ad12fbb8
 +eth[0-9] root:root     660 */lib/mdev/ifupdown.sh
 diff --git a/board/AidoSDR/motd b/board/AidoSDR/motd
 new file mode 100644
-index 0000000000..d1dc670823
+index 0000000000..051714c378
 --- /dev/null
 +++ b/board/AidoSDR/motd
 @@ -0,0 +1,7 @@
