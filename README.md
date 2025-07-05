@@ -146,7 +146,6 @@ DFU mode is available for AidoSDR, you can update the flash through DFU mode. Se
 sudo dfu-util -a firmware.dfu -D ./AidoSDR.dfu
 sudo dfu-util -a boot.dfu -D ./boot.dfu
 sudo dfu-util -a uboot-env.dfu -D ./uboot-env.dfu
-sudo dfu-util -a uboot-extra-env.dfu -U ./uboot-extra-env.dfu
 ```
 
 Now you can repower device.
