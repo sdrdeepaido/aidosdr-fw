@@ -1,0 +1,2211 @@
+From be6c15e8b5eab57eff5de17070e3152cb2babe48 Mon Sep 17 00:00:00 2001
+From: wjx <3570534440@qq.com>
+Date: Wed, 5 Nov 2025 15:43:58 +0800
+Subject: [PATCH] add-support-hdl
+
+---
+ library/axi_vcxo_ctrl/src/TPC116S1_spi.v      | 172 ++++++
+ .../axi_vcxo_ctrl/src/axi_vcxo_ctrl_v1_0.v    | 157 ++++++
+ .../src/axi_vcxo_ctrl_v1_0_S00_AXI.v          | 458 ++++++++++++++++
+ library/axi_vcxo_ctrl/src/pps_loop.v          | 498 ++++++++++++++++++
+ projects/aidosdr_A1/Makefile                  |  25 +
+ projects/aidosdr_A1/system_bd.tcl             | 414 +++++++++++++++
+ projects/aidosdr_A1/system_constr.xdc         | 128 +++++
+ projects/aidosdr_A1/system_project.tcl        |  16 +
+ projects/aidosdr_A1/system_top.v              | 259 +++++++++
+ 9 files changed, 2127 insertions(+)
+ create mode 100644 library/axi_vcxo_ctrl/src/TPC116S1_spi.v
+ create mode 100644 library/axi_vcxo_ctrl/src/axi_vcxo_ctrl_v1_0.v
+ create mode 100644 library/axi_vcxo_ctrl/src/axi_vcxo_ctrl_v1_0_S00_AXI.v
+ create mode 100644 library/axi_vcxo_ctrl/src/pps_loop.v
+ create mode 100644 projects/aidosdr_A1/Makefile
+ create mode 100644 projects/aidosdr_A1/system_bd.tcl
+ create mode 100644 projects/aidosdr_A1/system_constr.xdc
+ create mode 100644 projects/aidosdr_A1/system_project.tcl
+ create mode 100644 projects/aidosdr_A1/system_top.v
+
+diff --git a/library/axi_vcxo_ctrl/src/TPC116S1_spi.v b/library/axi_vcxo_ctrl/src/TPC116S1_spi.v
+new file mode 100644
+index 000000000..c2a46a3b7
+--- /dev/null
++++ b/library/axi_vcxo_ctrl/src/TPC116S1_spi.v
+@@ -0,0 +1,172 @@
++module TPC116S1_spi  (
++    input   wire            clk,
++    input   wire            rst,
++    input   wire  [15:0]    data,
++    output  reg             sclk,
++    output  wire            mosi,
++    output  reg             sync_n
++);
++
++    //====================================================
++    //parameter define
++    //====================================================
++    localparam  IDLE        = 4'b0001;
++    localparam  SYNC_PRE    = 4'b0010;
++    localparam  DATA        = 4'b0100;
++    localparam  SYNC_END    = 4'b1000;
++
++    //====================================================
++    // internal signals and registers
++    //====================================================
++    reg     [3:0]   state;
++    reg     [3:0]   cnt_cycle   ;
++    reg     [5:0]   cnt_bit     ;
++    reg     [15:0]  last_data   ;
++    reg     [23:0]  data_shift  ;
++    wire            rising_edge ;
++    wire            falling_edge;
++
++
++    //----------------state------------------
++    always @(posedge clk ) begin
++        if (rst==1'b1) begin
++            state <= IDLE;
++        end
++        else  begin
++            case (state)
++                IDLE : begin
++                    // detect a new data input, the dac value needs to be updated
++                    if (last_data != data) begin
++                        state <= SYNC_PRE;
++                    end
++                end
++
++                SYNC_PRE : begin
++                    // The SYNC is low, start to update the value
++                    if (falling_edge) begin
++                        state <= DATA;
++                    end
++                end
++
++                DATA : begin
++                    if (cnt_bit == 'd23 && falling_edge) begin
++                        state <= SYNC_END;
++                    end
++                end
++
++                SYNC_END : begin
++                    if (falling_edge == 1'b1) begin
++                        state <= IDLE;
++                    end
++                end
++            endcase
++        end
++    end
++
++    //----------------cnt_cycle------------------
++    always @(posedge clk ) begin
++        if (rst==1'b1) begin
++            cnt_cycle <= 'd0;
++        end
++        else if (state == SYNC_PRE || state == DATA || state == SYNC_END) begin
++            cnt_cycle <= cnt_cycle + 1'b1;
++        end
++        else  begin
++            cnt_cycle <=  'd0;
++        end
++    end
++
++    assign rising_edge = cnt_cycle==4'b1000;
++    assign falling_edge = cnt_cycle==4'b1111;
++
++    //----------------data_shift------------------
++    always @(posedge clk ) begin
++        if (rst==1'b1) begin
++            data_shift <= 'd0;
++        end
++        else if (state == IDLE && (last_data != data)) begin
++       //The first 6 bits are don't-care bits, followed by 2 bits for mode control, and the final 16 bits represent the DAC data.
++            data_shift <= {6'b000000,2'b00, data};
++        end
++        else if (state == DATA && rising_edge) begin
++            data_shift <=  {data_shift[22:0], 1'b0};
++        end
++    end
++
++    //----------------cnt_bit------------------
++    always @(posedge clk ) begin
++        if (rst==1'b1) begin
++            cnt_bit <= 'd0;
++        end
++        else if (state == DATA ) begin
++            if (cnt_bit == 'd23 && rising_edge) begin
++                cnt_bit <= 'd0;
++            end
++            else if(rising_edge)begin
++                cnt_bit <= cnt_bit + 1'b1;
++            end
++        end
++        else  begin
++            cnt_bit <=  'd0;
++        end
++    end
++
++    //----------------last_data------------------
++    always @(posedge clk ) begin
++        if (rst==1'b1) begin
++            last_data <= 'd0;
++        end
++        else if (state == IDLE && (last_data != data)) begin
++            last_data <= data;
++        end
++    end
++
++    //-----------------sclk-----------------
++    always @(posedge clk ) begin
++        if (rst==1'b1) begin
++            sclk <= 1'b0;
++        end
++        else if ((state==DATA||state==SYNC_PRE )&& rising_edge == 1'b1) begin
++            sclk <= 1'b1;
++        end
++        else if ((state==DATA||state==SYNC_PRE ) && falling_edge == 1'b1) begin
++            sclk <=  1'b0;
++        end
++    end
++
++    assign mosi = data_shift[23];
++
++    //----------------sync_n------------------
++    always @(posedge clk ) begin
++        if (rst==1'b1) begin
++            sync_n <= 1'b1;
++        end
++        else if (state == IDLE && (last_data != data)) begin
++            sync_n <= 1'b0;
++        end
++        else if (state == SYNC_END && falling_edge == 1'b1) begin
++            sync_n <=  1'b1;
++        end
++    end
++//wire [127:0] probe0;
++//assign  probe0 = {
++//    rst         ,
++//    data        ,
++//    sclk        ,
++//    mosi        ,
++//    sync_n      ,
++//    state       ,
++//    cnt_cycle   ,
++//    cnt_bit     ,
++//    last_data   ,
++//    data_shift  ,
++//    rising_edge ,
++//    falling_edge
++//} ;
++//ila_1 ila_1 (
++//        .clk(clk), // input wire clk
++    
++    
++//        .probe0(probe0) // input wire [127:0] probe0
++//    );
++endmodule
+\ No newline at end of file
+diff --git a/library/axi_vcxo_ctrl/src/axi_vcxo_ctrl_v1_0.v b/library/axi_vcxo_ctrl/src/axi_vcxo_ctrl_v1_0.v
+new file mode 100644
+index 000000000..150608cc9
+--- /dev/null
++++ b/library/axi_vcxo_ctrl/src/axi_vcxo_ctrl_v1_0.v
+@@ -0,0 +1,157 @@
++
++`timescale 1 ns / 1 ps
++
++	module axi_vcxo_ctrl #
++	(
++		// Users to add parameters here
++		parameter DEVICE="TPC116S1",
++
++		// User parameters ends
++		// Do not modify the parameters beyond this line
++
++
++		// Parameters of Axi Slave Bus Interface S00_AXI
++		parameter integer C_S00_AXI_DATA_WIDTH	= 32,
++		parameter integer C_S00_AXI_ADDR_WIDTH	= 5
++	)
++	(
++		// Users to add ports here
++		input  wire	 			CLK_40MHz_FPGA  ,
++		// PPS or 10 MHz (need to choose from SW)
++		input  wire             PPS_IN          ,
++		input  wire             CLKIN_10MHz     ,
++		input  wire             PPS_GPS         ,
++		output wire             PPS_LED         ,
++		output wire             PPS_LOCKED      ,
++		output wire             REF_10M_LOCKED  ,
++		output wire             CLK_40M_DAC_nSYNC,
++		output wire             CLK_40M_DAC_SCLK ,
++		output wire             CLK_40M_DAC_DIN ,
++
++		// User ports ends
++		// Do not modify the ports beyond this line
++
++
++		// Ports of Axi Slave Bus Interface S00_AXI
++		input wire  s00_axi_aclk,
++		input wire  s00_axi_aresetn,
++		input wire [C_S00_AXI_ADDR_WIDTH-1 : 0] s00_axi_awaddr,
++		input wire [2 : 0] s00_axi_awprot,
++		input wire  s00_axi_awvalid,
++		output wire  s00_axi_awready,
++		input wire [C_S00_AXI_DATA_WIDTH-1 : 0] s00_axi_wdata,
++		input wire [(C_S00_AXI_DATA_WIDTH/8)-1 : 0] s00_axi_wstrb,
++		input wire  s00_axi_wvalid,
++		output wire  s00_axi_wready,
++		output wire [1 : 0] s00_axi_bresp,
++		output wire  s00_axi_bvalid,
++		input wire  s00_axi_bready,
++		input wire [C_S00_AXI_ADDR_WIDTH-1 : 0] s00_axi_araddr,
++		input wire [2 : 0] s00_axi_arprot,
++		input wire  s00_axi_arvalid,
++		output wire  s00_axi_arready,
++		output wire [C_S00_AXI_DATA_WIDTH-1 : 0] s00_axi_rdata,
++		output wire [1 : 0] s00_axi_rresp,
++		output wire  s00_axi_rvalid,
++		input wire  s00_axi_rready
++	);
++
++
++	wire  	[0:0]	dac_mode 			;
++	wire 	[15:0]	dac_user_set_value	;
++	wire 	[15:0]	dac_dyn_value 		;
++	wire  	[1:0]	dac_ref_sel 		;
++
++
++	wire 		clk_200M;
++	wire 		clk_40M;
++	wire 		plllck;
++	wire 		ref_ext_pll_locked;
++	wire 		ref_is_10M;
++	wire 		ref_is_pps;
++	wire [15:0]	dyn_dac_value	;
++	wire        clk_int40;
++
++// Instantiation of Axi Bus Interface S00_AXI
++	axi_vcxo_ctrl_v1_0_S00_AXI # ( 
++		.C_S_AXI_DATA_WIDTH(C_S00_AXI_DATA_WIDTH),
++		.C_S_AXI_ADDR_WIDTH(C_S00_AXI_ADDR_WIDTH)
++	) axi_vcxo_ctrl_v1_0_S00_AXI_inst (
++		.dac_mode(dac_mode) 			,
++		.dac_user_set_value(dac_user_set_value)	,
++		.dac_dyn_value(dyn_dac_value) 		,
++		.dac_ref_sel(dac_ref_sel) 		,
++		.dac_locked(ref_ext_pll_locked) 			,
++		.S_AXI_ACLK(s00_axi_aclk),
++		.S_AXI_ARESETN(s00_axi_aresetn),
++		.S_AXI_AWADDR(s00_axi_awaddr),
++		.S_AXI_AWPROT(s00_axi_awprot),
++		.S_AXI_AWVALID(s00_axi_awvalid),
++		.S_AXI_AWREADY(s00_axi_awready),
++		.S_AXI_WDATA(s00_axi_wdata),
++		.S_AXI_WSTRB(s00_axi_wstrb),
++		.S_AXI_WVALID(s00_axi_wvalid),
++		.S_AXI_WREADY(s00_axi_wready),
++		.S_AXI_BRESP(s00_axi_bresp),
++		.S_AXI_BVALID(s00_axi_bvalid),
++		.S_AXI_BREADY(s00_axi_bready),
++		.S_AXI_ARADDR(s00_axi_araddr),
++		.S_AXI_ARPROT(s00_axi_arprot),
++		.S_AXI_ARVALID(s00_axi_arvalid),
++		.S_AXI_ARREADY(s00_axi_arready),
++		.S_AXI_RDATA(s00_axi_rdata),
++		.S_AXI_RRESP(s00_axi_rresp),
++		.S_AXI_RVALID(s00_axi_rvalid),
++		.S_AXI_RREADY(s00_axi_rready)
++	);
++
++	// Add user logic here
++	
++
++	assign REF_10M_LOCKED = ref_ext_pll_locked & ref_is_10M;
++	assign PPS_LOCKED = ref_ext_pll_locked & ref_is_pps;
++	assign PPS_LED = PPS_GPS;
++
++
++
++ppsloop u_ppsloop(
++    .xoclk              (CLK_40MHz_FPGA ),
++    .CLKIN_10MHz        (CLKIN_10MHz ),
++    .PPS_IN             (PPS_IN),
++    .refsel             (dac_ref_sel),
++    .lpps               ( ),
++    .is10meg            (ref_is_10M),
++    .ispps              (ref_is_pps),
++    .reflck             (ref_ext_pll_locked ),
++    .plllck             (plllck ),
++    .clk_int40          (clk_int40 ),
++    .sclk               (CLK_40M_DAC_SCLK    ),
++    .mosi               (CLK_40M_DAC_DIN     ),
++    .sync_n             (CLK_40M_DAC_nSYNC   ),
++    .dac_dflt           (16'h7888),
++    .dac_mode           (dac_mode ),
++    .dac_user_set_value (dac_user_set_value ),
++    .dyn_dac            (dyn_dac_value )
++);
++
++/* 	wire [127:0] probe0;
++	assign probe0={
++		dac_ref_sel,
++		dac_user_set_value,
++		plllck,
++		ref_ext_pll_locked,
++		ref_is_10M,
++		ref_is_pps,
++		dac_mode,
++		dyn_dac_value
++	};
++	ila_0 your_instance_name (
++		.clk(s00_axi_aclk), // input wire clk
++
++
++		.probe0(probe0) // input wire [127:0] probe0
++	);
++ */
++	// User logic ends
++
++endmodule
+diff --git a/library/axi_vcxo_ctrl/src/axi_vcxo_ctrl_v1_0_S00_AXI.v b/library/axi_vcxo_ctrl/src/axi_vcxo_ctrl_v1_0_S00_AXI.v
+new file mode 100644
+index 000000000..22ebf7eb8
+--- /dev/null
++++ b/library/axi_vcxo_ctrl/src/axi_vcxo_ctrl_v1_0_S00_AXI.v
+@@ -0,0 +1,458 @@
++
++`timescale 1 ns / 1 ps
++
++	module axi_vcxo_ctrl_v1_0_S00_AXI #
++	(
++		// Users to add parameters here
++
++		// User parameters ends
++		// Do not modify the parameters beyond this line
++
++		// Width of S_AXI data bus
++		parameter integer C_S_AXI_DATA_WIDTH	= 32,
++		// Width of S_AXI address bus
++		parameter integer C_S_AXI_ADDR_WIDTH	= 5
++	)
++	(
++		// Users to add ports here
++		output 	wire  	[0:0]	dac_mode 			,
++		output 	wire 	[15:0]	dac_user_set_value	,
++		input 	wire 	[15:0]	dac_dyn_value 		,
++		output 	wire  	[1:0]	dac_ref_sel 		,
++		input 	wire 			dac_locked 			,
++
++		// User ports ends
++		// Do not modify the ports beyond this line
++
++		// Global Clock Signal
++		input wire  S_AXI_ACLK,
++		// Global Reset Signal. This Signal is Active LOW
++		input wire  S_AXI_ARESETN,
++		// Write address (issued by master, acceped by Slave)
++		input wire [C_S_AXI_ADDR_WIDTH-1 : 0] S_AXI_AWADDR,
++		// Write channel Protection type. This signal indicates the
++    		// privilege and security level of the transaction, and whether
++    		// the transaction is a data access or an instruction access.
++		input wire [2 : 0] S_AXI_AWPROT,
++		// Write address valid. This signal indicates that the master signaling
++    		// valid write address and control information.
++		input wire  S_AXI_AWVALID,
++		// Write address ready. This signal indicates that the slave is ready
++    		// to accept an address and associated control signals.
++		output wire  S_AXI_AWREADY,
++		// Write data (issued by master, acceped by Slave) 
++		input wire [C_S_AXI_DATA_WIDTH-1 : 0] S_AXI_WDATA,
++		// Write strobes. This signal indicates which byte lanes hold
++    		// valid data. There is one write strobe bit for each eight
++    		// bits of the write data bus.    
++		input wire [(C_S_AXI_DATA_WIDTH/8)-1 : 0] S_AXI_WSTRB,
++		// Write valid. This signal indicates that valid write
++    		// data and strobes are available.
++		input wire  S_AXI_WVALID,
++		// Write ready. This signal indicates that the slave
++    		// can accept the write data.
++		output wire  S_AXI_WREADY,
++		// Write response. This signal indicates the status
++    		// of the write transaction.
++		output wire [1 : 0] S_AXI_BRESP,
++		// Write response valid. This signal indicates that the channel
++    		// is signaling a valid write response.
++		output wire  S_AXI_BVALID,
++		// Response ready. This signal indicates that the master
++    		// can accept a write response.
++		input wire  S_AXI_BREADY,
++		// Read address (issued by master, acceped by Slave)
++		input wire [C_S_AXI_ADDR_WIDTH-1 : 0] S_AXI_ARADDR,
++		// Protection type. This signal indicates the privilege
++    		// and security level of the transaction, and whether the
++    		// transaction is a data access or an instruction access.
++		input wire [2 : 0] S_AXI_ARPROT,
++		// Read address valid. This signal indicates that the channel
++    		// is signaling valid read address and control information.
++		input wire  S_AXI_ARVALID,
++		// Read address ready. This signal indicates that the slave is
++    		// ready to accept an address and associated control signals.
++		output wire  S_AXI_ARREADY,
++		// Read data (issued by slave)
++		output wire [C_S_AXI_DATA_WIDTH-1 : 0] S_AXI_RDATA,
++		// Read response. This signal indicates the status of the
++    		// read transfer.
++		output wire [1 : 0] S_AXI_RRESP,
++		// Read valid. This signal indicates that the channel is
++    		// signaling the required read data.
++		output wire  S_AXI_RVALID,
++		// Read ready. This signal indicates that the master can
++    		// accept the read data and response information.
++		input wire  S_AXI_RREADY
++	);
++
++	// AXI4LITE signals
++	reg [C_S_AXI_ADDR_WIDTH-1 : 0] 	axi_awaddr;
++	reg  	axi_awready;
++	reg  	axi_wready;
++	reg [1 : 0] 	axi_bresp;
++	reg  	axi_bvalid;
++	reg [C_S_AXI_ADDR_WIDTH-1 : 0] 	axi_araddr;
++	reg  	axi_arready;
++	reg [C_S_AXI_DATA_WIDTH-1 : 0] 	axi_rdata;
++	reg [1 : 0] 	axi_rresp;
++	reg  	axi_rvalid;
++
++	// Example-specific design signals
++	// local parameter for addressing 32 bit / 64 bit C_S_AXI_DATA_WIDTH
++	// ADDR_LSB is used for addressing 32/64 bit registers/memories
++	// ADDR_LSB = 2 for 32 bits (n downto 2)
++	// ADDR_LSB = 3 for 64 bits (n downto 3)
++	localparam integer ADDR_LSB = (C_S_AXI_DATA_WIDTH/32) + 1;
++	localparam integer OPT_MEM_ADDR_BITS = 2;
++	//----------------------------------------------
++	//-- Signals for user logic register space example
++	//------------------------------------------------
++	//-- Number of Slave Registers 8
++	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg0;
++	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg1;
++	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg2;
++	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg3;
++	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg4;
++	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg5;
++	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg6;
++	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg7;
++	wire	 slv_reg_rden;
++	wire	 slv_reg_wren;
++	reg [C_S_AXI_DATA_WIDTH-1:0]	 reg_data_out;
++	integer	 byte_index;
++	reg	 aw_en;
++
++	// I/O Connections assignments
++
++	assign S_AXI_AWREADY	= axi_awready;
++	assign S_AXI_WREADY	= axi_wready;
++	assign S_AXI_BRESP	= axi_bresp;
++	assign S_AXI_BVALID	= axi_bvalid;
++	assign S_AXI_ARREADY	= axi_arready;
++	assign S_AXI_RDATA	= axi_rdata;
++	assign S_AXI_RRESP	= axi_rresp;
++	assign S_AXI_RVALID	= axi_rvalid;
++	// Implement axi_awready generation
++	// axi_awready is asserted for one S_AXI_ACLK clock cycle when both
++	// S_AXI_AWVALID and S_AXI_WVALID are asserted. axi_awready is
++	// de-asserted when reset is low.
++
++	always @( posedge S_AXI_ACLK )
++	begin
++	  if ( S_AXI_ARESETN == 1'b0 )
++	    begin
++	      axi_awready <= 1'b0;
++	      aw_en <= 1'b1;
++	    end 
++	  else
++	    begin    
++	      if (~axi_awready && S_AXI_AWVALID && S_AXI_WVALID && aw_en)
++	        begin
++	          // slave is ready to accept write address when 
++	          // there is a valid write address and write data
++	          // on the write address and data bus. This design 
++	          // expects no outstanding transactions. 
++	          axi_awready <= 1'b1;
++	          aw_en <= 1'b0;
++	        end
++	        else if (S_AXI_BREADY && axi_bvalid)
++	            begin
++	              aw_en <= 1'b1;
++	              axi_awready <= 1'b0;
++	            end
++	      else           
++	        begin
++	          axi_awready <= 1'b0;
++	        end
++	    end 
++	end       
++
++	// Implement axi_awaddr latching
++	// This process is used to latch the address when both 
++	// S_AXI_AWVALID and S_AXI_WVALID are valid. 
++
++	always @( posedge S_AXI_ACLK )
++	begin
++	  if ( S_AXI_ARESETN == 1'b0 )
++	    begin
++	      axi_awaddr <= 0;
++	    end 
++	  else
++	    begin    
++	      if (~axi_awready && S_AXI_AWVALID && S_AXI_WVALID && aw_en)
++	        begin
++	          // Write Address latching 
++	          axi_awaddr <= S_AXI_AWADDR;
++	        end
++	    end 
++	end       
++
++	// Implement axi_wready generation
++	// axi_wready is asserted for one S_AXI_ACLK clock cycle when both
++	// S_AXI_AWVALID and S_AXI_WVALID are asserted. axi_wready is 
++	// de-asserted when reset is low. 
++
++	always @( posedge S_AXI_ACLK )
++	begin
++	  if ( S_AXI_ARESETN == 1'b0 )
++	    begin
++	      axi_wready <= 1'b0;
++	    end 
++	  else
++	    begin    
++	      if (~axi_wready && S_AXI_WVALID && S_AXI_AWVALID && aw_en )
++	        begin
++	          // slave is ready to accept write data when 
++	          // there is a valid write address and write data
++	          // on the write address and data bus. This design 
++	          // expects no outstanding transactions. 
++	          axi_wready <= 1'b1;
++	        end
++	      else
++	        begin
++	          axi_wready <= 1'b0;
++	        end
++	    end 
++	end       
++
++	// Implement memory mapped register select and write logic generation
++	// The write data is accepted and written to memory mapped registers when
++	// axi_awready, S_AXI_WVALID, axi_wready and S_AXI_WVALID are asserted. Write strobes are used to
++	// select byte enables of slave registers while writing.
++	// These registers are cleared when reset (active low) is applied.
++	// Slave register write enable is asserted when valid address and data are available
++	// and the slave is ready to accept the write address and write data.
++	assign slv_reg_wren = axi_wready && S_AXI_WVALID && axi_awready && S_AXI_AWVALID;
++
++	always @( posedge S_AXI_ACLK )
++	begin
++	  if ( S_AXI_ARESETN == 1'b0 )
++	    begin
++	      slv_reg0 <= 0;
++	      slv_reg1 <= 0;
++	      slv_reg2 <= 0;
++	      slv_reg3 <= 0;
++	      slv_reg4 <= 0;
++	      slv_reg5 <= 0;
++	      slv_reg6 <= 0;
++	      slv_reg7 <= 0;
++	    end 
++	  else begin
++	    if (slv_reg_wren)
++	      begin
++	        case ( axi_awaddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] )
++	          3'h0:
++	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
++	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
++	                // Respective byte enables are asserted as per write strobes 
++	                // Slave register 0
++	                slv_reg0[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
++	              end  
++	          3'h1:
++	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
++	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
++	                // Respective byte enables are asserted as per write strobes 
++	                // Slave register 1
++	                slv_reg1[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
++	              end  
++	          3'h2:
++	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
++	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
++	                // Respective byte enables are asserted as per write strobes 
++	                // Slave register 2
++	                slv_reg2[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
++	              end  
++	          3'h3:
++	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
++	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
++	                // Respective byte enables are asserted as per write strobes 
++	                // Slave register 3
++	                slv_reg3[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
++	              end  
++	          3'h4:
++	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
++	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
++	                // Respective byte enables are asserted as per write strobes 
++	                // Slave register 4
++	                slv_reg4[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
++	              end  
++	          3'h5:
++	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
++	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
++	                // Respective byte enables are asserted as per write strobes 
++	                // Slave register 5
++	                slv_reg5[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
++	              end  
++	          3'h6:
++	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
++	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
++	                // Respective byte enables are asserted as per write strobes 
++	                // Slave register 6
++	                slv_reg6[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
++	              end  
++	          3'h7:
++	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
++	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
++	                // Respective byte enables are asserted as per write strobes 
++	                // Slave register 7
++	                slv_reg7[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
++	              end  
++	          default : begin
++	                      slv_reg0 <= slv_reg0;
++	                      slv_reg1 <= slv_reg1;
++	                      slv_reg2 <= slv_reg2;
++	                      slv_reg3 <= slv_reg3;
++	                      slv_reg4 <= slv_reg4;
++	                      slv_reg5 <= slv_reg5;
++	                      slv_reg6 <= slv_reg6;
++	                      slv_reg7 <= slv_reg7;
++	                    end
++	        endcase
++	      end
++	  end
++	end    
++
++	// Implement write response logic generation
++	// The write response and response valid signals are asserted by the slave 
++	// when axi_wready, S_AXI_WVALID, axi_wready and S_AXI_WVALID are asserted.  
++	// This marks the acceptance of address and indicates the status of 
++	// write transaction.
++
++	always @( posedge S_AXI_ACLK )
++	begin
++	  if ( S_AXI_ARESETN == 1'b0 )
++	    begin
++	      axi_bvalid  <= 0;
++	      axi_bresp   <= 2'b0;
++	    end 
++	  else
++	    begin    
++	      if (axi_awready && S_AXI_AWVALID && ~axi_bvalid && axi_wready && S_AXI_WVALID)
++	        begin
++	          // indicates a valid write response is available
++	          axi_bvalid <= 1'b1;
++	          axi_bresp  <= 2'b0; // 'OKAY' response 
++	        end                   // work error responses in future
++	      else
++	        begin
++	          if (S_AXI_BREADY && axi_bvalid) 
++	            //check if bready is asserted while bvalid is high) 
++	            //(there is a possibility that bready is always asserted high)   
++	            begin
++	              axi_bvalid <= 1'b0; 
++	            end  
++	        end
++	    end
++	end   
++
++	// Implement axi_arready generation
++	// axi_arready is asserted for one S_AXI_ACLK clock cycle when
++	// S_AXI_ARVALID is asserted. axi_awready is 
++	// de-asserted when reset (active low) is asserted. 
++	// The read address is also latched when S_AXI_ARVALID is 
++	// asserted. axi_araddr is reset to zero on reset assertion.
++
++	always @( posedge S_AXI_ACLK )
++	begin
++	  if ( S_AXI_ARESETN == 1'b0 )
++	    begin
++	      axi_arready <= 1'b0;
++	      axi_araddr  <= 32'b0;
++	    end 
++	  else
++	    begin    
++	      if (~axi_arready && S_AXI_ARVALID)
++	        begin
++	          // indicates that the slave has acceped the valid read address
++	          axi_arready <= 1'b1;
++	          // Read address latching
++	          axi_araddr  <= S_AXI_ARADDR;
++	        end
++	      else
++	        begin
++	          axi_arready <= 1'b0;
++	        end
++	    end 
++	end       
++
++	// Implement axi_arvalid generation
++	// axi_rvalid is asserted for one S_AXI_ACLK clock cycle when both 
++	// S_AXI_ARVALID and axi_arready are asserted. The slave registers 
++	// data are available on the axi_rdata bus at this instance. The 
++	// assertion of axi_rvalid marks the validity of read data on the 
++	// bus and axi_rresp indicates the status of read transaction.axi_rvalid 
++	// is deasserted on reset (active low). axi_rresp and axi_rdata are 
++	// cleared to zero on reset (active low).  
++	always @( posedge S_AXI_ACLK )
++	begin
++	  if ( S_AXI_ARESETN == 1'b0 )
++	    begin
++	      axi_rvalid <= 0;
++	      axi_rresp  <= 0;
++	    end 
++	  else
++	    begin    
++	      if (axi_arready && S_AXI_ARVALID && ~axi_rvalid)
++	        begin
++	          // Valid read data is available at the read data bus
++	          axi_rvalid <= 1'b1;
++	          axi_rresp  <= 2'b0; // 'OKAY' response
++	        end   
++	      else if (axi_rvalid && S_AXI_RREADY)
++	        begin
++	          // Read data is accepted by the master
++	          axi_rvalid <= 1'b0;
++	        end                
++	    end
++	end    
++
++	// Implement memory mapped register select and read logic generation
++	// Slave register read enable is asserted when valid address is available
++	// and the slave is ready to accept the read address.
++	assign slv_reg_rden = axi_arready & S_AXI_ARVALID & ~axi_rvalid;
++	always @(*)
++	begin
++	      // Address decoding for reading registers
++	      case ( axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] )
++	        3'h0   : reg_data_out <= slv_reg0;
++	        3'h1   : reg_data_out <= slv_reg1;
++	        3'h2   : reg_data_out <= dac_dyn_value;
++	        3'h3   : reg_data_out <= slv_reg3;
++	        3'h4   : reg_data_out <= dac_locked;
++	        3'h5   : reg_data_out <= slv_reg5;
++	        3'h6   : reg_data_out <= slv_reg6;
++	        3'h7   : reg_data_out <= slv_reg7;
++	        default : reg_data_out <= 0;
++	      endcase
++	end
++
++	// Output register or memory read data
++	always @( posedge S_AXI_ACLK )
++	begin
++	  if ( S_AXI_ARESETN == 1'b0 )
++	    begin
++	      axi_rdata  <= 0;
++	    end 
++	  else
++	    begin    
++	      // When there is a valid read address (S_AXI_ARVALID) with 
++	      // acceptance of read address by the slave (axi_arready), 
++	      // output the read dada 
++	      if (slv_reg_rden)
++	        begin
++	          axi_rdata <= reg_data_out;     // register read data
++	        end   
++	    end
++	end    
++
++	// Add user logic here
++	assign dac_mode = slv_reg0[0];
++	assign dac_user_set_value = slv_reg1[15:0];
++	assign dac_ref_sel = slv_reg3[1:0];
++	
++	
++
++	// User logic ends
++
++	endmodule
+diff --git a/library/axi_vcxo_ctrl/src/pps_loop.v b/library/axi_vcxo_ctrl/src/pps_loop.v
+new file mode 100644
+index 000000000..aae018418
+--- /dev/null
++++ b/library/axi_vcxo_ctrl/src/pps_loop.v
+@@ -0,0 +1,498 @@
++//
++// Copyright 2015 Ettus Research
++//
++
++`timescale 1ns / 1ps
++
++
++module ppsloop (
++    input xoclk, // 40 MHz from VCTCXO
++    input CLKIN_10MHz,
++    input PPS_IN,
++    input [1:0] refsel,
++    output reg lpps,
++    output reg is10meg,
++    output reg ispps,
++    output reg reflck,
++    output plllck,// status of things
++    output clk_int40,
++    output sclk,
++    output mosi,
++    output sync_n,
++    input [15:0]    dac_dflt          ,         
++    input           dac_mode          ,         
++    input [15:0]    dac_user_set_value,
++    output          dyn_dac
++    
++);
++  wire ppsref = (refsel==2'b00)?CLKIN_10MHz:
++                (refsel==2'b01)?PPS_IN:
++                                CLKIN_10MHz;
++  // reference pps to discilpline the VCTX|CXO to, from GPS or EXT in
++
++  wire clk_200M_o, clk;
++  BUFG x_clk_gen ( .I(clk_200M_o), .O(clk));
++  wire clk_40M;
++  wire pps_loop_rst;
++
++  assign clk_int40 = clk_40M;
++  assign pps_loop_rst = ~plllck;
++
++  wire n_pps = (refsel==2'b10) | (refsel==2'b11);
++  reg _npps, no_pps;
++  always @(posedge clk) { no_pps, _npps } <= { _npps, n_pps };
++
++  PLLE2_ADV #(.BANDWIDTH("OPTIMIZED"), .COMPENSATION("INTERNAL"),
++     .DIVCLK_DIVIDE(1),
++     .CLKFBOUT_MULT(30),
++     .CLKOUT0_DIVIDE(6),
++     .CLKOUT1_DIVIDE(30),
++     .CLKIN1_PERIOD(25.0)
++   )
++   clkgen (
++      .PWRDWN(1'b0), .RST(1'b0),
++      .CLKIN1(xoclk),
++      .CLKOUT0(clk_200M_o),
++      .CLKOUT1(clk_40M),
++      .LOCKED(plllck)
++   );
++
++    // state machine to manage reference detection and xo adjustment steps
++  reg [2:0] sstate, nxt_sstate;
++  localparam REFDET=3'b000;
++  localparam CFADJ=3'b001;
++  localparam SLEDGEA=3'b010;
++  localparam SLEDGEB=3'b011;
++  localparam FINEADJ=3'b100;
++
++  // state machine to manage lead-lag count
++  reg [1:0] llstate, nxt_llstate;
++  localparam READY=2'b00;
++  localparam COUNT=2'b01;
++  localparam DONE=2'b11;
++  localparam WAIT=2'b10;
++
++  /* Counter generating a local pps for the xo derived clock domains.
++     nxt_lcnt is manipulated by a state machine (sstate) to allow
++     quick re-alignment of the local pps rising edge with that of
++     the reference.
++  */
++  reg [27:0] lcnt, nxt_lcnt;
++  wire recycle = (28'd199_999_999==lcnt); // sets the period, 1 sec
++
++  always @(posedge clk) begin
++    if (pps_loop_rst) begin
++      sstate <= REFDET;
++      lcnt <= 'd0;
++      lpps <= 1'b0; 
++    end else begin
++      sstate <= nxt_sstate;
++      lcnt <= nxt_lcnt;
++      lpps <= lcnt > 28'd150_000_000; // ~25% duty cycle
++    end
++  end
++
++  /* Reference signal detection:
++   * Count the time interval between rising edges on the reference
++   * signal. The interval counter "rcnt" is restarted at rising edges
++   * of ppsref. "ppsref" could be either a pps signal, or a 10 MHz clock.
++   * Register "rlst" captures the value of rcnt at each rising edge.
++   * From this count value, we know the reference frequency.
++   */
++  reg [27:0] rcnt, rlst;
++  reg signed [28:0] rdiff;
++  wire signed [28:0] srlst = { 1'b0, rlst }; // sign extended version of rlst
++  wire [27:0] nxt_rcnt;
++  reg rcnt_ovfl;
++  reg [3:0] ple; // pipeline from reference rising edge det.
++  wire valid_ref = is10meg | ispps;
++
++
++  /* If the reference is at 10 MHz, derive a reference pps using a counter
++   * to feed the frequency control logic. To detect a 0.5 ppm deviation
++   * on a 10 MHz signal using counters requires the better part of a second
++   * anyway, so samples at a 1 Hz rate are appropriate. This allows much of
++   * the same logic to be used for pps or 10 Mhz references.
++  */
++  reg [23:0] tcnt;
++  reg tpps;
++  wire [23:0] nxt_tcnt = (~is10meg | tcnt==24'd9999999) ? 24'b0 : tcnt+1'b1;
++  always @(posedge ppsref) begin
++    if (pps_loop_rst) begin
++      tcnt <= 'd0;
++      tpps <= 1'b0;
++    end  else  begin
++      /* note this is clocked by the reference signal and is not useful when
++      * the reference is a pps.
++      */
++      tcnt <= nxt_tcnt;
++      tpps <= (tcnt>24'd7499999);
++    end
++  end
++
++  /* The reference needs to be synchronized into the local clock domain,
++   * and while the local 'pps' is generated synchronously within this
++   * domain, it gets passed through identical stages to maintain
++   * the time relationship between detected rising edges.
++   */
++  reg [2:0] refsmp;
++  reg [2:0] tsmp;
++  reg [2:0] xosmp;
++  always @(posedge clk) begin
++    if (pps_loop_rst) begin
++      refsmp <= { refsmp[1:0], ppsref};
++      tsmp <= { tsmp[1:0], tpps};
++      xosmp <= { xosmp[1:0], lpps };
++    end  else begin
++      // apply same sync delay to all pps flavors
++      refsmp <= { refsmp[1:0], ppsref};
++      tsmp <= { tsmp[1:0], tpps};
++      xosmp <= { xosmp[1:0], lpps };
++    end
++  end
++
++
++  wire rising_r = (refsmp[2:1]==2'b01);
++  wire rising_t = (tsmp[2:1]==2'b01);
++  wire rising_ref = is10meg ? rising_t : rising_r;
++  wire rising_xo  = (xosmp[2:1]==2'b01);
++  wire lead = rising_xo & ~rising_ref;
++  wire lag = ~rising_xo & rising_ref;
++  wire trig = rising_xo ^ rising_ref;
++  wire dtrig = rising_xo & rising_ref;
++  wire untrig = rising_xo | rising_ref;
++  wire llrdy = (is10meg ? ~tsmp[2] : ~refsmp[2]) & ~xosmp[2];
++  wire rhigh = is10meg ? tsmp[1] : refsmp[1];
++
++
++  reg [5:0] pcnt;
++  reg pcnt_ovfl;
++  wire [5:0]  nxt_pcnt = (rising_r | pcnt_ovfl) ? 6'b0 : pcnt+1'b1;
++  always @(posedge clk) begin
++    if (pps_loop_rst) begin
++      pcnt <= 'd0;
++      pcnt_ovfl <= 1'b0;
++      is10meg <= 1'b0;
++    end else begin
++      pcnt <= nxt_pcnt;
++      if (rcnt_ovfl)
++        is10meg <= 1'b0;
++      else if (pcnt == 6'b111111) begin
++        pcnt_ovfl <= 1'b1;
++        is10meg <= 1'b0;
++      end
++      else if (rising_r) begin
++        is10meg <=  (pcnt > 6'd16) & (pcnt < 6'd24);
++        pcnt_ovfl <= 1'b0;
++      end
++    end
++
++  end
++
++  reg rr;
++  assign nxt_rcnt = rr ? 28'b0 : rcnt+1'b1;
++  always @(posedge clk) begin
++    if (pps_loop_rst) begin
++      rr <= 1'b0;
++      ple <= 'd0;
++      rcnt <= 'd0;
++      ispps <= 1'b0;
++      rcnt_ovfl <= 'd0;
++    end else begin
++      rr <= rising_ref;
++      ple[3:0] <= {ple[2:0],rising_ref & valid_ref};
++
++      rcnt <= nxt_rcnt;
++
++      // set the overflow flag if no reference edge is detected and
++      // hold it asserted until an edge does arrive. This allows clearing of
++      // the other flags, even if there is no reference.
++      if (rcnt==28'b1111111111111111111111111111)
++        rcnt_ovfl <= 1'b1;
++      else if (rr)
++        rcnt_ovfl <= 1'b0;
++
++      if (rr) begin
++        // a rising edge arrived, grab the count and compare to bounds
++        rlst <= rcnt;
++      end
++      if (rr | rcnt_ovfl) begin
++        ispps <= ~is10meg & ~rcnt_ovfl & (rcnt > 28'd199997000) & (rcnt < 200003000);
++        /* reference frequency detect limits:
++        * 10M sampled with 200M should be 20 cycles, 16-24 provides xtra margin
++        * to allow for tolerances and possibly sampling at jittery edges
++        * allow +- 15 ppm on a pps signal
++        */
++
++      end
++    end
++  end
++
++
++  reg signed [27:0] coarse;
++  reg [15:0] dacv = 16'd32767; // power-on default mid-scale
++  wire signed [16:0] sdacv = { 1'b0, dacv};
++  /* to exit coarse adjustment, the frequency error shall be small for
++   * several cycles
++   */
++  reg esmall;
++  reg [2:0] es;
++
++  reg pr;
++
++
++  /* The xo can be on-frequency while the rising edges are still
++   * out-of-phase, so a phase detector is also required. The
++   * counter "llcnt" accumulates how many ticks local pps leads
++   * or lags the reference pps . The range of this counter
++   * need not be as large as "rcnt". The count increments
++   * or decrements based upon which signal has a rising edge first,
++   * and the count is halted when the other rising edge occurs.
++   * Both signals are required to transition back to the low state
++   * to re-arm the detection state machine.
++  */
++  reg llcntena;
++  reg lead_lagn;
++  reg signed [11:0] llcnt, nxt_llcnt;
++  wire signed [11:0] incr = lead_lagn ? -12'sd1 : 12'sd1; // -1 lead, +1 lag
++  reg [3:0] llsmall;
++  reg llovfl;
++
++  reg [2:0] refs1, refs0;
++  reg refchanged;
++  reg refinternal;
++  always @(posedge clk) begin
++    refs1 <= { refs1[1:0], refsel[1] };
++    refs0 <= { refs0[1:0], refsel[0] };
++    refchanged <= { refs1[2], refs0[2] } != { refs1[1], refs0[1] };
++    refinternal <=  ({refs1[2],refs0[2]}==2'b10)|| ({refs1[2],refs0[2]}==2'b11); // not gps or external
++
++    // compute how far off the expected period we are
++    if (ple[1]) begin
++      rdiff <= srlst-29'd199999999;
++    end
++
++    // compute an adjustment for the dac
++    if (ple[2]) begin
++      // if rdiff is (+), the xo is fast
++      // include a bit of gain for quick adjustment
++      // an approximate gain was initially determined by 'theory' using
++      // the xo tuning sensitivity, and was find-tuned 'by hand'
++      // by observing the loop behaviour (with rdiff instrumented and
++      // pps signals connected out to an oscilloscope).
++      coarse <= sdacv - (rdiff <<< 3);
++    end
++
++    // determine when the period error is small
++    if (ple[2] | rcnt_ovfl) begin
++      es <= { es[1:0], (rdiff<29'sd8 && rdiff>-29'sd8) };
++      esmall <= valid_ref & ~rcnt_ovfl & (es[2:0] == 3'b111);
++    end
++    else if (sstate==REFDET) begin
++      es <= 3'b0;
++      esmall <= 1'b0;
++    end
++
++    // assign the dac value when doing coarse-adjustment
++    // in the fine-adjust phaase, the PI control filtering takes over
++    if (ple[3] & (sstate==CFADJ)) begin
++      dacv <= coarse[15:0];
++    end
++    else if (sstate==REFDET) begin
++      dacv <= 16'd32767; // center the DAC
++    end
++  end
++
++
++  always @(*) begin
++    nxt_sstate=sstate;
++    pr = 1'b0;
++    nxt_lcnt = recycle ? 26'd0 : lcnt + 1'b1;
++    case (sstate)
++    REFDET: begin // determine reference type
++      pr = 1'b0;
++      if (valid_ref) nxt_sstate = CFADJ;
++    end
++    CFADJ: begin // coarse freqency adjustment
++      pr = 1'b1;
++      if (esmall) nxt_sstate = SLEDGEA;
++    end
++    SLEDGEA: begin // ensure local pps is low and wait for a ref edge
++      pr = 1'b1; // preload the integrator
++      if (rhigh) nxt_sstate = SLEDGEB;
++    end
++    SLEDGEB: begin // force local pps rising edge to match reference
++      nxt_lcnt = 26'd0;
++      pr = 1'b1; // preload the integrator
++      if(rhigh) begin
++        nxt_lcnt = 28'd149_999_998; // force rising edge in a couple cycles
++        nxt_sstate = FINEADJ;
++      end
++    end
++    FINEADJ: begin // wide-ish bandwidth PI control
++      if (~valid_ref | llovfl) nxt_sstate = REFDET;
++    end
++    default: begin
++      nxt_sstate = REFDET;
++    end
++    endcase
++    // overriding conditions:
++    if (refinternal | refchanged | rcnt_ovfl ) nxt_sstate = REFDET;
++  end
++
++  reg llsena;
++  always @(posedge clk) begin
++    llstate <= nxt_llstate;
++    if (llcntena) llcnt <= nxt_llcnt;
++    if (llstate==READY) lead_lagn <= lead;
++    if (llsena) llsmall <= { (llsmall[2:0] == 3'b111), llsmall[1:0],
++                                        (llcnt < 12'sd3)&(llcnt > -12'sd3)};
++    if (llcntena)  llovfl <= (llcnt>12'sd1800) | (llcnt< -12'sd1800);
++  end
++
++  reg ppsfltena;
++  always @(*) begin
++    // values to hold by default:
++    nxt_llstate = llstate;
++    llcntena=1'b0;
++    nxt_llcnt=llcnt;
++    ppsfltena = 1'b0;
++    llsena = 1'b0;
++
++    case (llstate)
++    READY: begin
++      nxt_llcnt=12'b0;
++      if (trig | dtrig) begin
++        nxt_llstate = trig ? COUNT : DONE;
++        llcntena=1'b1;
++        // even if dtrig, set llcnt to 0 to feed the filter pipe
++      end
++    end
++    COUNT: begin
++      if (untrig) begin // the second edge arrived
++        nxt_llstate = DONE;
++      end
++      else begin
++        llcntena=1'b1;
++        nxt_llcnt=llcnt+incr;
++      end
++    end
++    DONE: begin
++      nxt_llstate = WAIT;
++      ppsfltena = 1'b1;
++    end
++    WAIT: begin
++      if (llrdy) begin
++        nxt_llstate = READY;
++        llsena = 1'b1;
++      end
++    end
++    endcase
++    if (sstate==REFDET) begin
++      nxt_llstate = READY;
++      llcntena=1'b0;
++      ppsfltena = 1'b0;
++      llsena = 1'b0;
++    end
++  end
++
++
++  reg[15:0] daco=16'h7888;
++
++  reg [1:0] enchain=2'b00;
++  always @(posedge clk) enchain <= { enchain[1:0], ppsfltena & (enchain==2'b00) };
++
++  reg signed [23:0] integ;
++  reg signed [23:0] prop;
++  wire signed [23:0] nxt_integ = integ + (llcnt <<< 6);
++  wire signed [23:0] nxt_prop = (llcnt <<< 7);
++  wire signed [23:0] eff = integ + prop;
++  wire urng = eff[23], orng = eff[23:22]==2'b01;
++  reg erng;
++  /* The values for proportional and integral gain terms were originally
++   * estimated using a model that accounted for the xo tuning sensitivity.
++   * When implemented, the loop dynamics observed differed significantly
++   * from model results, probably as a result of the Xilinx PLL
++   * (which was not modelled) being present in the loop. The gain values
++   * were find-tuned 'by hand' by observing the loop behaviour (with llcnt
++   * instrumented) and pps signals connected out to an oscilloscope).
++   */
++
++  always @(posedge clk) begin
++    if (pps_loop_rst ) begin
++      daco <= dac_dflt;
++    end
++    if (no_pps) begin
++     daco <= dac_dflt;
++    end
++    else if (pr) begin
++      integ <= { 2'b00, dacv, 6'b0 }; // precharge the accumulator
++      daco <= dacv;
++    end
++    else begin
++      if (enchain[0]) begin
++        integ <= nxt_integ;
++        prop <= nxt_prop;
++      end
++      if (enchain[1]) begin
++        daco <= eff[21:6];
++        erng <= urng | orng;
++      end
++    end
++  end
++
++  wire  fadj=   (sstate==FINEADJ);
++  always @(posedge clk) begin
++    reflck <= refinternal | fadj;
++  end
++wire [15:0] dac_value;
++
++assign  dac_value = dac_mode ? dac_user_set_value : daco;
++assign  dyn_dac   = daco;
++TPC116S1_spi u_TPC116S1_spi(
++    .clk     ( clk         ),
++    .rst     ( pps_loop_rst),
++    .data    ( dac_value   ),
++    .sclk    ( sclk        ),
++    .mosi    ( mosi        ),
++    .sync_n  ( sync_n      )
++);
++// wire [255:0] probe0;
++// assign probe0 = {
++//   dacv, // 16 bits
++//   coarse, // 16 bits
++//   rlst, // 28 bits
++//   rcnt, // 28 bits
++//   llcnt, // 12 bits
++//   llstate, // 2 bits
++//   sstate, // 3 bits
++//   esmall, // 1 bit
++//   is10meg, // 1 bit
++//   ispps, // 1 bit
++//   reflck, // 1 bit
++//   plllck, // 1 bit
++//   CLKIN_10MHz,
++//   PPS_IN,
++//   erng, // error range flag for dac value
++//   refsel, // reference select (2 bits)
++//   no_pps, // no pps flag (1 bit)
++//   pr, // phase reset (1 bit)
++//   lpps, // local pps (1 bit)
++//   tpps, // tpps (1 bit)
++//   lead_lagn, // lead/lag polarity (1 bit)
++//   llovfl, // lead/lag overflow (1 bit)
++//   llsmall[3:0], // lead/lag small count (4 bits)
++//   refsmp[2:0], tsmp[2:0], xosmp[2:0] // sampled pps signals (3x3=9 bits)
++// };
++
++// ila_ppsloop ila_ppsloop (
++// 	.clk(clk), // input wire clk
++
++// 	.probe0(probe0) // input wire [255:0] probe0
++// );
++
++
++
++
++
++endmodule
+diff --git a/projects/aidosdr_A1/Makefile b/projects/aidosdr_A1/Makefile
+new file mode 100644
+index 000000000..f60466840
+--- /dev/null
++++ b/projects/aidosdr_A1/Makefile
+@@ -0,0 +1,25 @@
++####################################################################################
++## Copyright (c) 2018 - 2023 Analog Devices, Inc.
++### SPDX short identifier: BSD-1-Clause
++## Auto-generated, do not modify!
++####################################################################################
++#vivado2023.2
++PROJECT_NAME := aidosdr_A1
++
++M_DEPS += ../common/xilinx/adi_fir_filter_constr.xdc
++M_DEPS += ../common/xilinx/adi_fir_filter_bd.tcl
++M_DEPS += ../../library/util_cdc/sync_bits.v
++M_DEPS += ../../library/common/util_pulse_gen.v
++M_DEPS += ../../library/common/ad_iobuf.v
++M_DEPS += ../../library/common/ad_bus_mux.v
++M_DEPS += ../../library/axi_tdd/scripts/axi_tdd.tcl
++M_DEPS += ../../library/axi_ad9361/axi_ad9361_delay.tcl
++
++LIB_DEPS += axi_ad9361
++LIB_DEPS += axi_dmac
++LIB_DEPS += axi_tdd
++LIB_DEPS += util_pack/util_cpack2
++LIB_DEPS += util_pack/util_upack2
++
++
++include ../scripts/project-xilinx.mk
+diff --git a/projects/aidosdr_A1/system_bd.tcl b/projects/aidosdr_A1/system_bd.tcl
+new file mode 100644
+index 000000000..a7d90b2fa
+--- /dev/null
++++ b/projects/aidosdr_A1/system_bd.tcl
+@@ -0,0 +1,414 @@
++# create board design
++
++source $ad_hdl_dir/projects/common/xilinx/adi_fir_filter_bd.tcl
++source $ad_hdl_dir/library/axi_tdd/scripts/axi_tdd.tcl
++set_property  ip_repo_paths  $ad_hdl_dir/library/ [current_project]
++update_ip_catalog
++
++# default ports
++
++create_bd_intf_port -mode Master -vlnv xilinx.com:interface:ddrx_rtl:1.0 ddr
++create_bd_intf_port -mode Master -vlnv xilinx.com:display_processing_system7:fixedio_rtl:1.0 fixed_io
++
++# create_bd_intf_port -mode Master -vlnv xilinx.com:interface:mdio_rtl:1.0 MDIO_PHY
++# create_bd_intf_port -mode Master -vlnv xilinx.com:interface:rgmii_rtl:1.0 RGMII
++
++# create_bd_port -dir O eth_rst_n
++
++create_bd_port -dir O spi0_csn_2_o
++create_bd_port -dir O spi0_csn_1_o
++create_bd_port -dir O spi0_csn_0_o
++create_bd_port -dir I spi0_csn_i
++create_bd_port -dir I spi0_clk_i
++create_bd_port -dir O spi0_clk_o
++create_bd_port -dir I spi0_sdo_i
++create_bd_port -dir O spi0_sdo_o
++create_bd_port -dir I spi0_sdi_i
++
++create_bd_port -dir I -from 63 -to 0 gpio_i
++create_bd_port -dir O -from 63 -to 0 gpio_o
++create_bd_port -dir O -from 63 -to 0 gpio_t
++
++create_bd_port -dir O txdata_o
++create_bd_port -dir I tdd_ext_sync
++
++
++create_bd_port -dir O pl_uart0_txd
++create_bd_port -dir I pl_uart0_rxd
++
++# create_bd_port -dir I CLKIN_10MHz
++# create_bd_port -dir I CLK_40MHz_FPGA
++# create_bd_port -dir O CLK_40M_DAC_DIN
++# create_bd_port -dir O CLK_40M_DAC_SCLK
++# create_bd_port -dir O CLK_40M_DAC_nSYNC
++# create_bd_port -dir I PPS_GPS
++# create_bd_port -dir I PPS_IN
++# create_bd_port -dir O PPS_LED
++# create_bd_port -dir O PPS_LOCKED
++# create_bd_port -dir O REF_10M_LOCKED
++
++# instance: sys_ps7
++
++ad_ip_instance processing_system7 sys_ps7
++
++# ps7 settings
++
++ad_ip_parameter sys_ps7 CONFIG.PCW_PRESET_BANK0_VOLTAGE {LVCMOS 3.3V}
++ad_ip_parameter sys_ps7 CONFIG.PCW_PRESET_BANK1_VOLTAGE {LVCMOS 3.3V}
++ad_ip_parameter sys_ps7 CONFIG.PCW_PACKAGE_NAME clg400
++ad_ip_parameter sys_ps7 CONFIG.PCW_GPIO_MIO_GPIO_ENABLE 1
++# ad_ip_parameter sys_ps7 CONFIG.PCW_ENET0_PERIPHERAL_ENABLE 1
++# ad_ip_parameter sys_ps7 CONFIG.PCW_ENET0_ENET0_IO "EMIO"
++# ad_ip_parameter sys_ps7 CONFIG.PCW_ENET0_GRP_MDIO_ENABLE 1
++# ad_ip_parameter sys_ps7 CONFIG.PCW_ENET0_GRP_MDIO_IO "EMIO"
++ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP2 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_EN_CLK1_PORT 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_EN_RST1_PORT 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ 100.0
++ad_ip_parameter sys_ps7 CONFIG.PCW_FPGA1_PERIPHERAL_FREQMHZ 200.0
++ad_ip_parameter sys_ps7 CONFIG.PCW_GPIO_EMIO_GPIO_ENABLE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_GPIO_EMIO_GPIO_IO 64
++ad_ip_parameter sys_ps7 CONFIG.PCW_SPI1_PERIPHERAL_ENABLE 0
++ad_ip_parameter sys_ps7 CONFIG.PCW_I2C0_PERIPHERAL_ENABLE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_I2C0_I2C0_IO {MIO 10 .. 11}
++ad_ip_parameter sys_ps7 CONFIG.PCW_SD0_PERIPHERAL_ENABLE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_SDIO_PERIPHERAL_FREQMHZ 50
++ad_ip_parameter sys_ps7 CONFIG.PCW_UART0_PERIPHERAL_ENABLE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_UART0_UART0_IO EMIO
++ad_ip_parameter sys_ps7 CONFIG.PCW_UART1_PERIPHERAL_ENABLE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_UART1_UART1_IO {MIO 12 .. 13}
++# ad_ip_parameter sys_ps7 CONFIG.PCW_UART0_UART0_IO {MIO 14 .. 15}
++ad_ip_parameter sys_ps7 CONFIG.PCW_I2C1_PERIPHERAL_ENABLE 0
++ad_ip_parameter sys_ps7 CONFIG.PCW_QSPI_PERIPHERAL_ENABLE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_QSPI_GRP_SINGLE_SS_ENABLE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_SPI0_PERIPHERAL_ENABLE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_SPI0_SPI0_IO EMIO
++ad_ip_parameter sys_ps7 CONFIG.PCW_TTC0_PERIPHERAL_ENABLE 0
++ad_ip_parameter sys_ps7 CONFIG.PCW_USE_FABRIC_INTERRUPT 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_USB0_PERIPHERAL_ENABLE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_GPIO_MIO_GPIO_ENABLE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_GPIO_MIO_GPIO_IO MIO
++ad_ip_parameter sys_ps7 CONFIG.PCW_USB0_RESET_IO {MIO 47}
++ad_ip_parameter sys_ps7 CONFIG.PCW_USB0_RESET_ENABLE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_IRQ_F2P_INTR 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_IRQ_F2P_MODE REVERSE
++ad_ip_parameter sys_ps7 CONFIG.PCW_MIO_0_PULLUP {enabled}
++ad_ip_parameter sys_ps7 CONFIG.PCW_MIO_9_PULLUP {enabled}
++ad_ip_parameter sys_ps7 CONFIG.PCW_MIO_10_PULLUP {enabled}
++ad_ip_parameter sys_ps7 CONFIG.PCW_MIO_11_PULLUP {enabled}
++ad_ip_parameter sys_ps7 CONFIG.PCW_MIO_48_PULLUP {enabled}
++ad_ip_parameter sys_ps7 CONFIG.PCW_MIO_49_PULLUP {disabled}
++ad_ip_parameter sys_ps7 CONFIG.PCW_MIO_53_PULLUP {enabled}
++
++# DDR MT41K256M16 HA-125 (32M, 16bit, 8banks)
++
++ad_ip_parameter sys_ps7 CONFIG.PCW_UIPARAM_DDR_PARTNO {MT41J256M16 RE-125}
++ad_ip_parameter sys_ps7 CONFIG.PCW_UIPARAM_DDR_BUS_WIDTH {16 Bit}
++ad_ip_parameter sys_ps7 CONFIG.PCW_UIPARAM_DDR_USE_INTERNAL_VREF 0
++ad_ip_parameter sys_ps7 CONFIG.PCW_UIPARAM_DDR_TRAIN_WRITE_LEVEL 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_UIPARAM_DDR_TRAIN_READ_GATE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_UIPARAM_DDR_TRAIN_DATA_EYE 1
++ad_ip_parameter sys_ps7 CONFIG.PCW_UIPARAM_DDR_DQS_TO_CLK_DELAY_0 0.048
++ad_ip_parameter sys_ps7 CONFIG.PCW_UIPARAM_DDR_DQS_TO_CLK_DELAY_1 0.050
++ad_ip_parameter sys_ps7 CONFIG.PCW_UIPARAM_DDR_BOARD_DELAY0 0.241
++ad_ip_parameter sys_ps7 CONFIG.PCW_UIPARAM_DDR_BOARD_DELAY1 0.240
++
++ad_ip_instance xlconcat sys_concat_intc
++ad_ip_parameter sys_concat_intc CONFIG.NUM_PORTS 16
++
++ad_ip_instance proc_sys_reset sys_rstgen
++ad_ip_parameter sys_rstgen CONFIG.C_EXT_RST_WIDTH 1
++
++# system reset/clock definitions
++
++# add external ethernet phy
++# ad_ip_instance gmii_to_rgmii sys_rgmii
++# ad_ip_parameter sys_rgmii CONFIG.SupportLevel Include_Shared_Logic_in_Core
++
++
++
++# set axi_vcxo_ctrl [ create_bd_cell -type ip -vlnv user.org:user:axi_vcxo_ctrl:1.0 axi_vcxo_ctrl ]
++# ad_connect axi_vcxo_ctrl/CLK_40M_DAC_DIN CLK_40M_DAC_DIN
++# ad_connect axi_vcxo_ctrl/CLK_40M_DAC_SCLK CLK_40M_DAC_SCLK
++# ad_connect axi_vcxo_ctrl/CLK_40M_DAC_nSYNC CLK_40M_DAC_nSYNC
++# ad_connect axi_vcxo_ctrl/CLKIN_10MHz CLKIN_10MHz
++# ad_connect axi_vcxo_ctrl/CLK_40MHz_FPGA CLK_40MHz_FPGA
++# ad_connect axi_vcxo_ctrl/PPS_GPS PPS_GPS
++# ad_connect axi_vcxo_ctrl/PPS_IN PPS_IN
++# ad_connect axi_vcxo_ctrl/PPS_LED PPS_LED
++# ad_connect axi_vcxo_ctrl/PPS_LOCKED PPS_LOCKED
++# ad_connect axi_vcxo_ctrl/REF_10M_LOCKED REF_10M_LOCKED
++
++
++
++
++ad_connect  sys_cpu_clk sys_ps7/FCLK_CLK0
++ad_connect  sys_200m_clk sys_ps7/FCLK_CLK1
++ad_connect  sys_cpu_reset sys_rstgen/peripheral_reset
++ad_connect  sys_cpu_resetn sys_rstgen/peripheral_aresetn
++# ad_connect  eth_rst_n sys_rstgen/peripheral_aresetn
++ad_connect  sys_cpu_clk sys_rstgen/slowest_sync_clk
++ad_connect  sys_rstgen/ext_reset_in sys_ps7/FCLK_RESET0_N
++# ad_connect  sys_rgmii/tx_reset sys_rstgen/peripheral_reset
++# ad_connect  sys_rgmii/rx_reset sys_rstgen/peripheral_reset
++# ad_connect  sys_rgmii/clkin sys_ps7/FCLK_CLK1 
++# ad_connect  sys_ps7/MDIO_ETHERNET_0 sys_rgmii/MDIO_GEM
++# ad_connect  sys_ps7/GMII_ETHERNET_0 sys_rgmii/GMII
++# ad_connect  sys_rgmii/MDIO_PHY MDIO_PHY
++# ad_connect  sys_rgmii/RGMII RGMII
++
++# interface connections
++
++ad_connect  ddr sys_ps7/DDR
++ad_connect  gpio_i sys_ps7/GPIO_I
++ad_connect  gpio_o sys_ps7/GPIO_O
++ad_connect  gpio_t sys_ps7/GPIO_T
++ad_connect  fixed_io sys_ps7/FIXED_IO
++
++# ps7 spi connections
++
++ad_connect  spi0_csn_2_o sys_ps7/SPI0_SS2_O
++ad_connect  spi0_csn_1_o sys_ps7/SPI0_SS1_O
++ad_connect  spi0_csn_0_o sys_ps7/SPI0_SS_O
++ad_connect  spi0_csn_i sys_ps7/SPI0_SS_I
++ad_connect  spi0_clk_i sys_ps7/SPI0_SCLK_I
++ad_connect  spi0_clk_o sys_ps7/SPI0_SCLK_O
++ad_connect  spi0_sdo_i sys_ps7/SPI0_MOSI_I
++ad_connect  spi0_sdo_o sys_ps7/SPI0_MOSI_O
++ad_connect  spi0_sdi_i sys_ps7/SPI0_MISO_I
++
++# ps7 uart connections
++ad_connect pl_uart0_txd sys_ps7/UART0_TX
++ad_connect pl_uart0_rxd sys_ps7/UART0_RX
++# interrupts
++
++ad_connect  sys_concat_intc/dout sys_ps7/IRQ_F2P
++ad_connect  sys_concat_intc/In15 GND
++ad_connect  sys_concat_intc/In14 GND
++ad_connect  sys_concat_intc/In13 GND
++ad_connect  sys_concat_intc/In12 GND
++ad_connect  sys_concat_intc/In11 GND
++ad_connect  sys_concat_intc/In10 GND
++ad_connect  sys_concat_intc/In9 GND
++ad_connect  sys_concat_intc/In8 GND
++ad_connect  sys_concat_intc/In7 GND
++ad_connect  sys_concat_intc/In6 GND
++ad_connect  sys_concat_intc/In5 GND
++ad_connect  sys_concat_intc/In4 GND
++ad_connect  sys_concat_intc/In3 GND
++ad_connect  sys_concat_intc/In2 GND
++ad_connect  sys_concat_intc/In1 GND
++ad_connect  sys_concat_intc/In0 GND
++
++
++# ad9361
++
++create_bd_port -dir I rx_clk_in
++create_bd_port -dir I rx_frame_in
++create_bd_port -dir I -from 11 -to 0 rx_data_in
++
++create_bd_port -dir O tx_clk_out
++create_bd_port -dir O tx_frame_out
++create_bd_port -dir O -from 11 -to 0 tx_data_out
++
++create_bd_port -dir O enable
++create_bd_port -dir O txnrx
++create_bd_port -dir I up_enable
++create_bd_port -dir I up_txnrx
++
++# ad9361 core(s)
++
++ad_ip_instance axi_ad9361 axi_ad9361
++ad_ip_parameter axi_ad9361 CONFIG.ID 0
++ad_ip_parameter axi_ad9361 CONFIG.CMOS_OR_LVDS_N 1
++ad_ip_parameter axi_ad9361 CONFIG.MODE_1R1T 0
++ad_ip_parameter axi_ad9361 CONFIG.ADC_INIT_DELAY 21
++
++ad_ip_instance axi_dmac axi_ad9361_dac_dma
++ad_ip_parameter axi_ad9361_dac_dma CONFIG.DMA_TYPE_SRC 0
++ad_ip_parameter axi_ad9361_dac_dma CONFIG.DMA_TYPE_DEST 1
++ad_ip_parameter axi_ad9361_dac_dma CONFIG.CYCLIC 1
++ad_ip_parameter axi_ad9361_dac_dma CONFIG.AXI_SLICE_SRC 0
++ad_ip_parameter axi_ad9361_dac_dma CONFIG.AXI_SLICE_DEST 0
++ad_ip_parameter axi_ad9361_dac_dma CONFIG.DMA_2D_TRANSFER 0
++ad_ip_parameter axi_ad9361_dac_dma CONFIG.DMA_DATA_WIDTH_DEST 64
++
++ad_add_interpolation_filter "tx_fir_interpolator" 8 2 1 {61.44} {7.68} \
++                             "$ad_hdl_dir/library/util_fir_int/coefile_int.coe"
++ad_ip_instance xlslice interp_slice
++ad_ip_instance util_upack2 tx_upack
++
++ad_ip_instance axi_dmac axi_ad9361_adc_dma
++ad_ip_parameter axi_ad9361_adc_dma CONFIG.DMA_TYPE_SRC 2
++ad_ip_parameter axi_ad9361_adc_dma CONFIG.DMA_TYPE_DEST 0
++ad_ip_parameter axi_ad9361_adc_dma CONFIG.CYCLIC 0
++ad_ip_parameter axi_ad9361_adc_dma CONFIG.SYNC_TRANSFER_START 0
++ad_ip_parameter axi_ad9361_adc_dma CONFIG.AXI_SLICE_SRC 0
++ad_ip_parameter axi_ad9361_adc_dma CONFIG.AXI_SLICE_DEST 0
++ad_ip_parameter axi_ad9361_adc_dma CONFIG.DMA_2D_TRANSFER 0
++ad_ip_parameter axi_ad9361_adc_dma CONFIG.DMA_DATA_WIDTH_SRC 64
++ad_ip_parameter axi_ad9361_adc_dma CONFIG.SYNC_TRANSFER_START {true}
++
++ad_add_decimation_filter "rx_fir_decimator" 8 2 1 {61.44} {61.44} \
++                         "$ad_hdl_dir/library/util_fir_int/coefile_int.coe"
++ad_ip_instance xlslice decim_slice
++ad_ip_instance util_cpack2 cpack
++
++# connections
++
++ad_connect  rx_clk_in axi_ad9361/rx_clk_in
++ad_connect  rx_frame_in axi_ad9361/rx_frame_in
++ad_connect  rx_data_in axi_ad9361/rx_data_in
++ad_connect  tx_clk_out axi_ad9361/tx_clk_out
++ad_connect  tx_frame_out axi_ad9361/tx_frame_out
++ad_connect  tx_data_out axi_ad9361/tx_data_out
++ad_connect  enable axi_ad9361/enable
++ad_connect  txnrx axi_ad9361/txnrx
++ad_connect  up_enable axi_ad9361/up_enable
++ad_connect  up_txnrx axi_ad9361/up_txnrx
++
++ad_connect  axi_ad9361/tdd_sync GND
++ad_connect  sys_200m_clk axi_ad9361/delay_clk
++ad_connect  axi_ad9361/l_clk axi_ad9361/clk
++
++ad_connect axi_ad9361/l_clk rx_fir_decimator/aclk
++
++ad_connect axi_ad9361/adc_valid_i0 rx_fir_decimator/valid_in_0
++ad_connect axi_ad9361/adc_enable_i0 rx_fir_decimator/enable_in_0
++ad_connect axi_ad9361/adc_data_i0 rx_fir_decimator/data_in_0
++ad_connect axi_ad9361/adc_valid_q0 rx_fir_decimator/valid_in_1
++ad_connect axi_ad9361/adc_enable_q0 rx_fir_decimator/enable_in_1
++ad_connect axi_ad9361/adc_data_q0 rx_fir_decimator/data_in_1
++
++ad_connect axi_ad9361/l_clk cpack/clk
++ad_connect axi_ad9361/rst cpack/reset
++
++ad_connect axi_ad9361/adc_enable_i1 cpack/enable_2
++ad_connect axi_ad9361/adc_data_i1 cpack/fifo_wr_data_2
++ad_connect axi_ad9361/adc_enable_q1 cpack/enable_3
++ad_connect axi_ad9361/adc_data_q1 cpack/fifo_wr_data_3
++
++ad_connect cpack/enable_0 rx_fir_decimator/enable_out_0
++ad_connect cpack/enable_1 rx_fir_decimator/enable_out_1
++ad_connect cpack/fifo_wr_data_0 rx_fir_decimator/data_out_0
++ad_connect cpack/fifo_wr_data_1 rx_fir_decimator/data_out_1
++ad_connect rx_fir_decimator/valid_out_0 cpack/fifo_wr_en
++
++ad_connect axi_ad9361_adc_dma/fifo_wr cpack/packed_fifo_wr
++ad_connect axi_ad9361/up_adc_gpio_out decim_slice/Din
++ad_connect rx_fir_decimator/active decim_slice/Dout
++
++ad_connect axi_ad9361/l_clk tx_fir_interpolator/aclk
++
++ad_connect axi_ad9361/dac_enable_i0 tx_fir_interpolator/dac_enable_0
++ad_connect axi_ad9361/dac_valid_i0 tx_fir_interpolator/dac_valid_0
++ad_connect axi_ad9361/dac_data_i0 tx_fir_interpolator/data_out_0
++ad_connect axi_ad9361/dac_enable_q0 tx_fir_interpolator/dac_enable_1
++ad_connect axi_ad9361/dac_valid_q0 tx_fir_interpolator/dac_valid_1
++ad_connect axi_ad9361/dac_data_q0 tx_fir_interpolator/data_out_1
++
++ad_connect  axi_ad9361/l_clk tx_upack/clk
++
++ad_connect  tx_upack/fifo_rd_data_0  tx_fir_interpolator/data_in_0
++ad_connect  tx_upack/enable_0  tx_fir_interpolator/enable_out_0
++ad_connect  tx_upack/fifo_rd_data_1  tx_fir_interpolator/data_in_1
++ad_connect  tx_upack/enable_1  tx_fir_interpolator/enable_out_1
++
++ad_connect axi_ad9361/dac_enable_i1 tx_upack/enable_2
++ad_connect axi_ad9361/dac_data_i1 tx_upack/fifo_rd_data_2
++ad_connect axi_ad9361/dac_enable_q1 tx_upack/enable_3
++ad_connect axi_ad9361/dac_data_q1 tx_upack/fifo_rd_data_3
++
++ad_connect tx_upack/s_axis  axi_ad9361_dac_dma/m_axis
++
++ad_ip_instance util_vector_logic logic_or [list \
++  C_OPERATION {or} \
++  C_SIZE 1]
++
++ad_connect  logic_or/Op1  tx_fir_interpolator/valid_out_0
++ad_connect  logic_or/Op2  axi_ad9361/dac_valid_i1
++ad_connect  logic_or/Res  tx_upack/fifo_rd_en
++ad_connect  tx_upack/fifo_rd_underflow axi_ad9361/dac_dunf
++
++ad_connect axi_ad9361/up_dac_gpio_out interp_slice/Din
++ad_connect  tx_fir_interpolator/active interp_slice/Dout
++
++ad_connect  axi_ad9361/l_clk axi_ad9361_adc_dma/fifo_wr_clk
++ad_connect  axi_ad9361/l_clk axi_ad9361_dac_dma/m_axis_aclk
++ad_connect  cpack/fifo_wr_overflow axi_ad9361/adc_dovf
++
++# External TDD
++set TDD_CHANNEL_CNT 3
++set TDD_DEFAULT_POL 0b010
++set TDD_REG_WIDTH 32
++set TDD_BURST_WIDTH 32
++set TDD_SYNC_WIDTH 0
++set TDD_SYNC_INT 0
++set TDD_SYNC_EXT 1
++set TDD_SYNC_EXT_CDC 1
++ad_tdd_gen_create axi_tdd_0 $TDD_CHANNEL_CNT \
++                            $TDD_DEFAULT_POL \
++                            $TDD_REG_WIDTH \
++                            $TDD_BURST_WIDTH \
++                            $TDD_SYNC_WIDTH \
++                            $TDD_SYNC_INT \
++                            $TDD_SYNC_EXT \
++                            $TDD_SYNC_EXT_CDC
++
++ad_ip_instance util_vector_logic logic_inv [list \
++  C_OPERATION {not} \
++  C_SIZE 1]
++
++ad_ip_instance util_vector_logic logic_or_1 [list \
++  C_OPERATION {or} \
++  C_SIZE 1]
++
++ad_connect logic_inv/Op1  axi_ad9361/rst
++ad_connect logic_inv/Res  axi_tdd_0/resetn
++ad_connect axi_ad9361/l_clk axi_tdd_0/clk
++ad_connect axi_tdd_0/sync_in tdd_ext_sync
++ad_connect axi_tdd_0/tdd_channel_0 txdata_o
++ad_connect axi_tdd_0/tdd_channel_1 axi_ad9361_adc_dma/sync
++
++ad_connect  logic_or_1/Op1  axi_ad9361/rst
++ad_connect  logic_or_1/Op2  axi_tdd_0/tdd_channel_2
++ad_connect  logic_or_1/Res  tx_upack/reset
++
++# interconnects
++
++ad_cpu_interconnect 0x79020000 axi_ad9361
++ad_cpu_interconnect 0x7C400000 axi_ad9361_adc_dma
++ad_cpu_interconnect 0x7C420000 axi_ad9361_dac_dma
++ad_cpu_interconnect 0x7C440000 axi_tdd_0
++# ad_cpu_interconnect 0x43C00000 axi_vcxo_ctrl
++
++ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP1 {1}
++ad_connect sys_cpu_clk sys_ps7/S_AXI_HP1_ACLK
++ad_connect axi_ad9361_adc_dma/m_dest_axi sys_ps7/S_AXI_HP1
++
++create_bd_addr_seg -range 0x20000000 -offset 0x00000000 \
++                    [get_bd_addr_spaces axi_ad9361_adc_dma/m_dest_axi] \
++                    [get_bd_addr_segs sys_ps7/S_AXI_HP1/HP1_DDR_LOWOCM] \
++                    SEG_sys_ps7_HP1_DDR_LOWOCM
++
++ad_ip_parameter sys_ps7 CONFIG.PCW_USE_S_AXI_HP2 {1}
++ad_connect sys_cpu_clk sys_ps7/S_AXI_HP2_ACLK
++ad_connect axi_ad9361_dac_dma/m_src_axi sys_ps7/S_AXI_HP2
++
++create_bd_addr_seg -range 0x20000000 -offset 0x00000000 \
++                    [get_bd_addr_spaces axi_ad9361_dac_dma/m_src_axi] \
++                    [get_bd_addr_segs sys_ps7/S_AXI_HP2/HP2_DDR_LOWOCM] \
++                    SEG_sys_ps7_HP2_DDR_LOWOCM
++
++ad_connect sys_cpu_clk axi_ad9361_dac_dma/m_src_axi_aclk
++ad_connect sys_cpu_clk axi_ad9361_adc_dma/m_dest_axi_aclk
++ad_connect sys_cpu_resetn axi_ad9361_adc_dma/m_dest_axi_aresetn
++ad_connect sys_cpu_resetn axi_ad9361_dac_dma/m_src_axi_aresetn
++
++# interrupts
++
++ad_cpu_interrupt ps-13 mb-13 axi_ad9361_adc_dma/irq
++ad_cpu_interrupt ps-12 mb-12 axi_ad9361_dac_dma/irq
++
++
+diff --git a/projects/aidosdr_A1/system_constr.xdc b/projects/aidosdr_A1/system_constr.xdc
+new file mode 100644
+index 000000000..13ba0b406
+--- /dev/null
++++ b/projects/aidosdr_A1/system_constr.xdc
+@@ -0,0 +1,128 @@
++# set_property -dict {PACKAGE_PIN V6 IOSTANDARD LVCMOS33} [get_ports CLK_40M_DAC_nSYNC];
++# set_property -dict {PACKAGE_PIN W6 IOSTANDARD LVCMOS33} [get_ports CLK_40M_DAC_SCLK];
++# set_property -dict {PACKAGE_PIN V10 IOSTANDARD LVCMOS33} [get_ports CLK_40M_DAC_DIN];
++# set_property -dict {PACKAGE_PIN V11 IOSTANDARD LVCMOS33} [get_ports PPS_IN];
++# set_property -dict {PACKAGE_PIN K17 IOSTANDARD LVCMOS18} [get_ports CLK_40MHz_FPGA];
++# set_property -dict {PACKAGE_PIN J18 IOSTANDARD LVCMOS18} [get_ports CLKIN_10MHz];
++# set_property -dict {PACKAGE_PIN M20 IOSTANDARD LVCMOS18} [get_ports CLKIN_10MHz_REQ];
++
++
++# set_property -dict {PACKAGE_PIN C20 IOSTANDARD LVCMOS18} [get_ports {RGMII_td[3]}];
++# set_property -dict {PACKAGE_PIN D19 IOSTANDARD LVCMOS18} [get_ports {RGMII_td[2]}];
++# set_property -dict {PACKAGE_PIN D20 IOSTANDARD LVCMOS18} [get_ports {RGMII_td[1]}];
++# set_property -dict {PACKAGE_PIN F19 IOSTANDARD LVCMOS18} [get_ports {RGMII_td[0]}];
++# set_property -dict {PACKAGE_PIN E18 IOSTANDARD LVCMOS18} [get_ports {RGMII_rd[3]}];
++# set_property -dict {PACKAGE_PIN E19 IOSTANDARD LVCMOS18} [get_ports {RGMII_rd[2]}];
++# set_property -dict {PACKAGE_PIN E17 IOSTANDARD LVCMOS18} [get_ports {RGMII_rd[1]}];
++# set_property -dict {PACKAGE_PIN F16 IOSTANDARD LVCMOS18} [get_ports {RGMII_rd[0]}];
++
++# set_property -dict {PACKAGE_PIN F20 IOSTANDARD LVCMOS18} [get_ports RGMII_tx_ctl];
++# set_property -dict {PACKAGE_PIN D18 IOSTANDARD LVCMOS18} [get_ports RGMII_txc];
++# set_property -dict {PACKAGE_PIN G17 IOSTANDARD LVCMOS18} [get_ports RGMII_rx_ctl];
++# set_property -dict {PACKAGE_PIN H16 IOSTANDARD LVCMOS18} [get_ports RGMII_rxc];
++# set_property -dict {PACKAGE_PIN B19 IOSTANDARD LVCMOS18} [get_ports eth_rst_n];
++# set_property -dict {PACKAGE_PIN A20 IOSTANDARD LVCMOS18} [get_ports MDIO_PHY_mdio_io];
++# set_property -dict {PACKAGE_PIN B20 IOSTANDARD LVCMOS18} [get_ports MDIO_PHY_mdc];
++
++# set_property -dict {PACKAGE_PIN G15 IOSTANDARD LVCMOS18} [get_ports tx_amp_en];
++
++# create_clock -period 8.000 [get_ports RGMII_rxc];
++
++
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_status[7]}];
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_status[6]}];
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_status[5]}];
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_status[4]}];
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_status[3]}];
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_status[2]}];
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_status[1]}];
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_status[0]}];
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_ctl[3]}];
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_ctl[2]}];
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_ctl[1]}];
++# set_property -dict {PACKAGE_PIN  IOSTANDARD LVCMOS18} [get_ports {gpio_ctl[0]}];
++set_property -dict {PACKAGE_PIN T17 IOSTANDARD LVCMOS18} [get_ports gpio_en_agc];
++set_property -dict {PACKAGE_PIN N17 IOSTANDARD LVCMOS18} [get_ports gpio_resetb];
++set_property -dict {PACKAGE_PIN R18 IOSTANDARD LVCMOS18} [get_ports enable];
++set_property -dict {PACKAGE_PIN P14 IOSTANDARD LVCMOS18} [get_ports txnrx];
++
++set_property PULLUP true [get_ports spi_csn];
++set_property -dict {PACKAGE_PIN  P18 IOSTANDARD LVCMOS18} [get_ports  spi_csn] 
++set_property -dict {PACKAGE_PIN  R14 IOSTANDARD LVCMOS18} [get_ports spi_clk];
++set_property -dict {PACKAGE_PIN  P15 IOSTANDARD LVCMOS18} [get_ports spi_mosi];
++set_property -dict {PACKAGE_PIN  T14 IOSTANDARD LVCMOS18} [get_ports spi_miso];
++
++
++set_property -dict {PACKAGE_PIN N18 IOSTANDARD LVCMOS18} [get_ports rx_clk_in];
++set_property -dict {PACKAGE_PIN U14 IOSTANDARD LVCMOS18} [get_ports rx_frame_in];
++set_property -dict {PACKAGE_PIN W16 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[0]}];
++set_property -dict {PACKAGE_PIN V16 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[1]}];
++set_property -dict {PACKAGE_PIN R17 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[2]}];
++set_property -dict {PACKAGE_PIN R16 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[3]}];
++set_property -dict {PACKAGE_PIN V18 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[4]}];
++set_property -dict {PACKAGE_PIN V17 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[5]}];
++set_property -dict {PACKAGE_PIN Y19 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[6]}];
++set_property -dict {PACKAGE_PIN Y18 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[7]}];
++set_property -dict {PACKAGE_PIN W19 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[8]}];
++set_property -dict {PACKAGE_PIN W18 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[9]}];
++set_property -dict {PACKAGE_PIN W20 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[10]}];
++set_property -dict {PACKAGE_PIN V20 IOSTANDARD LVCMOS18} [get_ports {rx_data_in[11]}];
++
++set_property -dict {PACKAGE_PIN U18 IOSTANDARD LVCMOS18} [get_ports tx_clk_out];
++set_property -dict {PACKAGE_PIN Y16 IOSTANDARD LVCMOS18} [get_ports tx_frame_out];
++set_property -dict {PACKAGE_PIN Y14 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[0]}];
++set_property -dict {PACKAGE_PIN W14 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[1]}];
++set_property -dict {PACKAGE_PIN W15 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[2]}];
++set_property -dict {PACKAGE_PIN V15 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[3]}];
++set_property -dict {PACKAGE_PIN W13 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[4]}];
++set_property -dict {PACKAGE_PIN V12 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[5]}];
++set_property -dict {PACKAGE_PIN U12 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[6]}];
++set_property -dict {PACKAGE_PIN T12 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[7]}];
++set_property -dict {PACKAGE_PIN U20 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[8]}];
++set_property -dict {PACKAGE_PIN T20 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[9]}];
++set_property -dict {PACKAGE_PIN U17 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[10]}];
++set_property -dict {PACKAGE_PIN T16 IOSTANDARD LVCMOS18} [get_ports {tx_data_out[11]}];
++
++
++set_property -dict {PACKAGE_PIN  B20 IOSTANDARD LVCMOS33} [get_ports pl_uart0_rxd ] 
++set_property -dict {PACKAGE_PIN  C20 IOSTANDARD LVCMOS33} [get_ports pl_uart0_txd ] 
++
++set_property -dict {PACKAGE_PIN  H17 IOSTANDARD LVCMOS33} [get_ports {GPIOB[0]}];
++set_property -dict {PACKAGE_PIN  J18 IOSTANDARD LVCMOS33} [get_ports {GPIOB[1]}];
++set_property -dict {PACKAGE_PIN  H18 IOSTANDARD LVCMOS33} [get_ports {GPIOB[2]}];
++set_property -dict {PACKAGE_PIN  F19 IOSTANDARD LVCMOS33} [get_ports {GPIOB[3]}];
++set_property -dict {PACKAGE_PIN  F20 IOSTANDARD LVCMOS33} [get_ports {GPIOB[4]}];
++set_property -dict {PACKAGE_PIN  G17 IOSTANDARD LVCMOS33} [get_ports {GPIOB[5]}];
++set_property -dict {PACKAGE_PIN  G18 IOSTANDARD LVCMOS33} [get_ports {GPIOB[6]}];
++set_property -dict {PACKAGE_PIN  J20 IOSTANDARD LVCMOS33} [get_ports {GPIOB[7]}];
++set_property -dict {PACKAGE_PIN  H20 IOSTANDARD LVCMOS33} [get_ports {GPIOB[8]}];
++set_property -dict {PACKAGE_PIN  G19 IOSTANDARD LVCMOS33} [get_ports {GPIOB[9]}];
++set_property -dict {PACKAGE_PIN  G20 IOSTANDARD LVCMOS33} [get_ports {GPIOB[10]}];
++set_property -dict {PACKAGE_PIN  H15 IOSTANDARD LVCMOS33} [get_ports {GPIOB[11]}];
++set_property -dict {PACKAGE_PIN  G15 IOSTANDARD LVCMOS33} [get_ports {GPIOB[12]}];
++set_property -dict {PACKAGE_PIN  K14 IOSTANDARD LVCMOS33} [get_ports {GPIOB[13]}];
++set_property -dict {PACKAGE_PIN  J14 IOSTANDARD LVCMOS33} [get_ports {GPIOB[14]}];
++set_property -dict {PACKAGE_PIN  N15 IOSTANDARD LVCMOS33} [get_ports {GPIOB[15]}];
++set_property -dict {PACKAGE_PIN  N16 IOSTANDARD LVCMOS33} [get_ports {GPIOB[16]}];
++set_property -dict {PACKAGE_PIN  L14 IOSTANDARD LVCMOS33} [get_ports {GPIOB[17]}];
++set_property -dict {PACKAGE_PIN  L15 IOSTANDARD LVCMOS33} [get_ports {GPIOB[18]}];
++set_property -dict {PACKAGE_PIN  M14 IOSTANDARD LVCMOS33} [get_ports {GPIOB[19]}];
++set_property -dict {PACKAGE_PIN  M15 IOSTANDARD LVCMOS33} [get_ports {GPIOB[20]}];
++set_property -dict {PACKAGE_PIN  K16 IOSTANDARD LVCMOS33} [get_ports {GPIOB[21]}];
++set_property -dict {PACKAGE_PIN  J16 IOSTANDARD LVCMOS33} [get_ports {GPIOB[22]}];
++set_property -dict {PACKAGE_PIN  J15 IOSTANDARD LVCMOS33} [get_ports {GPIOB[23]}];
++
++create_clock -name rx_clk -period  16.27 [get_ports rx_clk_in];
++
++create_clock -name clk_fpga_0 -period 10 [get_pins "i_system_wrapper/system_i/sys_ps7/inst/PS7_i/FCLKCLK[0]"];
++create_clock -name clk_fpga_1 -period  5 [get_pins "i_system_wrapper/system_i/sys_ps7/inst/PS7_i/FCLKCLK[1]"];
++
++create_clock -name spi0_clk      -period 40   [get_pins -hier */EMIOSPI0SCLKO];
++
++set_input_jitter clk_fpga_0 0.3;
++set_input_jitter clk_fpga_1 0.15;
++
++
++set_false_path -from [get_pins {i_system_wrapper/system_i/axi_ad9361/inst/i_rx/i_up_adc_common/up_adc_gpio_out_int_reg[0]/C}];
++set_false_path -from [get_pins {i_system_wrapper/system_i/axi_ad9361/inst/i_tx/i_up_dac_common/up_dac_gpio_out_int_reg[0]/C}];
++
+diff --git a/projects/aidosdr_A1/system_project.tcl b/projects/aidosdr_A1/system_project.tcl
+new file mode 100644
+index 000000000..d6c58b229
+--- /dev/null
++++ b/projects/aidosdr_A1/system_project.tcl
+@@ -0,0 +1,16 @@
++source ../../scripts/adi_env.tcl
++source $ad_hdl_dir/projects/scripts/adi_project_xilinx.tcl
++source $ad_hdl_dir/projects/scripts/adi_board.tcl
++
++adi_project_create aidosdr_A1 0 {} "xc7z010clg400-2"
++
++adi_project_files aidosdr_A1 [list \
++  "system_top.v" \
++  "system_constr.xdc" \
++  "$ad_hdl_dir/library/common/ad_iobuf.v"]
++
++
++set_property is_enabled false [get_files  *system_sys_ps7_0.xdc]
++adi_project_run aidosdr_A1
++source $ad_hdl_dir/library/axi_ad9361/axi_ad9361_delay.tcl
++
+diff --git a/projects/aidosdr_A1/system_top.v b/projects/aidosdr_A1/system_top.v
+new file mode 100644
+index 000000000..96cbd0060
+--- /dev/null
++++ b/projects/aidosdr_A1/system_top.v
+@@ -0,0 +1,259 @@
++// ***************************************************************************
++// ***************************************************************************
++// Copyright (C) 2014-2023 Analog Devices, Inc. All rights reserved.
++//
++// In this HDL repository, there are many different and unique modules, consisting
++// of various HDL (Verilog or VHDL) components. The individual modules are
++// developed independently, and may be accompanied by separate and unique license
++// terms.
++//
++// The user should read each of these license terms, and understand the
++// freedoms and responsibilities that he or she has by using this source/core.
++//
++// This core is distributed in the hope that it will be useful, but WITHOUT ANY
++// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
++// A PARTICULAR PURPOSE.
++//
++// Redistribution and use of source or resulting binaries, with or without modification
++// of this file, are permitted under one of the following two license terms:
++//
++//   1. The GNU General Public License version 2 as published by the
++//      Free Software Foundation, which can be found in the top level directory
++//      of this repository (LICENSE_GPL2), and also online at:
++//      <https://www.gnu.org/licenses/old-licenses/gpl-2.0.html>
++//
++// OR
++//
++//   2. An ADI specific BSD license, which can be found in the top level directory
++//      of this repository (LICENSE_ADIBSD), and also on-line at:
++//      https://github.com/analogdevicesinc/hdl/blob/master/LICENSE_ADIBSD
++//      This will allow to generate bit files and not release the source code,
++//      as long as it attaches to an ADI device.
++//
++// ***************************************************************************
++// ***************************************************************************
++
++`timescale 1ns/100ps
++
++module system_top (
++  // output          MDIO_PHY_mdc,
++  // inout           MDIO_PHY_mdio_io,
++  // input [3:0]     RGMII_rd,
++  // input           RGMII_rx_ctl,
++  // input           RGMII_rxc,
++  // output [3:0]    RGMII_td,
++  // output          RGMII_tx_ctl,
++  // output          RGMII_txc,
++  // output          eth_rst_n ,
++
++  inout   [14:0]  ddr_addr,
++  inout   [ 2:0]  ddr_ba,
++  inout           ddr_cas_n,
++  inout           ddr_ck_n,
++  inout           ddr_ck_p,
++  inout           ddr_cke,
++  inout           ddr_cs_n,
++  inout   [ 1:0]  ddr_dm,
++  inout   [31:0]  ddr_dq,
++  inout   [ 1:0]  ddr_dqs_n,
++  inout   [ 1:0]  ddr_dqs_p,
++  inout           ddr_odt,
++  inout           ddr_ras_n,
++  inout           ddr_reset_n,
++  inout           ddr_we_n,
++
++  inout           fixed_io_ddr_vrn,
++  inout           fixed_io_ddr_vrp,
++  inout   [31:0]  fixed_io_mio,
++  inout           fixed_io_ps_clk,
++  inout           fixed_io_ps_porb,
++  inout           fixed_io_ps_srstb,
++
++  input           rx_clk_in,
++  input           rx_frame_in,
++  input   [11:0]  rx_data_in,
++  output          tx_clk_out,
++  output          tx_frame_out,
++  output  [11:0]  tx_data_out,
++
++  output          enable,
++  output          txnrx,
++  
++  inout           gpio_resetb,
++  inout           gpio_en_agc,
++  // inout   [ 3:0]  gpio_ctl,
++  // inout   [ 7:0]  gpio_status,
++
++  output          spi_csn,
++  output          spi_clk,
++  output          spi_mosi,
++  input           spi_miso,
++
++  input           pl_uart0_rxd,
++  output          pl_uart0_txd,
++  // clock form vctcxo
++  // input  wire	 			      CLK_40MHz_FPGA  ,
++  // // PPS or 10 MHz (need to choose from SW)
++  // input  wire             PPS_IN          ,
++  // input  wire             CLKIN_10MHz     ,
++  // output wire             CLKIN_10MHz_REQ ,
++
++  // // Clock disciplining / AD5662 controls
++  // output wire             CLK_40M_DAC_nSYNC,
++  // output wire             CLK_40M_DAC_SCLK ,
++  // output wire             CLK_40M_DAC_DIN ,
++
++  // output                  tx_amp_en,
++
++  inout   [23:0]           GPIOB
++);
++
++  // internal signals
++
++  wire    [63:0]  gpio_i;
++  wire    [63:0]  gpio_o;
++  wire    [63:0]  gpio_t;
++
++  wire            iic_scl;
++  wire            iic_sda;
++  wire            phaser_enable;
++  wire            pl_burst;
++  wire            pl_muxout;
++  wire            pl_spi_clk_o;
++  wire            pl_spi_miso;
++  wire            pl_spi_mosi;
++  wire            pl_txdata;
++
++
++  wire     [ 3:0]  gpio_ctl   ;
++  wire     [ 7:0]  gpio_status;  
++
++  // instantiations
++
++  ad_iobuf #(
++    .DATA_WIDTH(14)
++  ) i_iobuf (
++    .dio_t (gpio_t[13:0]),
++    .dio_i (gpio_o[13:0]),
++    .dio_o (gpio_i[13:0]),
++    .dio_p ({ gpio_resetb,        // 13:13
++              gpio_en_agc,        // 12:12
++              gpio_ctl,           // 11: 8
++              gpio_status}));     //  7: 0
++
++  assign gpio_i[16:14] = gpio_o[16:14];
++
++  ad_iobuf #(.DATA_WIDTH(24)) gpio_io_buf (
++    .dio_t (gpio_t[58:35]),
++    .dio_i (gpio_o[58:35]),
++    .dio_o (gpio_i[58:35]),
++    .dio_p (GPIOB       )
++    );
++
++  assign gpio_i[17] = pl_muxout;
++  assign phaser_enable = gpio_o[14];
++
++
++  //PL_GPIO2
++  ad_iobuf #(
++    .DATA_WIDTH(1)
++  ) i_pl_gpio_iobuf (
++    .dio_t (phaser_enable),
++    .dio_i (pl_spi_clk_o),
++    .dio_o (pl_muxout),
++    .dio_p (pl_gpio2));
++
++  //PL_GPIO1
++  // assign pl_spi_miso = pl_gpio1 & ~phaser_enable;
++  // assign pl_burst    = pl_gpio1 &  phaser_enable;
++
++  //PL_GPIO0
++  assign pl_gpio0 = phaser_enable ? pl_txdata : pl_spi_mosi;
++
++  // assign CLKIN_10MHz_REQ = 1'b1;
++  // assign eth_rst_n = 1'b1;
++  // assign tx_amp_en = 1'b1;
++
++  system_wrapper i_system_wrapper (
++    // .CLKIN_10MHz(CLKIN_10MHz),
++    // .CLK_40MHz_FPGA(CLK_40MHz_FPGA),
++    // .CLK_40M_DAC_DIN(CLK_40M_DAC_DIN),
++    // .CLK_40M_DAC_SCLK(CLK_40M_DAC_SCLK),
++    // .CLK_40M_DAC_nSYNC(CLK_40M_DAC_nSYNC),
++    // .PPS_GPS(1'b0),
++    // .PPS_IN(PPS_IN),
++    // .PPS_LED(),
++    // .PPS_LOCKED(),
++    // .REF_10M_LOCKED(),
++    // .MDIO_PHY_mdc(MDIO_PHY_mdc),
++    // .MDIO_PHY_mdio_io(MDIO_PHY_mdio_io),
++    // .RGMII_rd(RGMII_rd),
++    // .RGMII_rx_ctl(RGMII_rx_ctl),
++    // .RGMII_rxc(RGMII_rxc),
++    // .RGMII_td(RGMII_td),
++    // .RGMII_tx_ctl(RGMII_tx_ctl),
++    // .RGMII_txc(RGMII_txc),
++    // .eth_rst_n(),
++    .ddr_addr (ddr_addr),
++    .ddr_ba (ddr_ba),
++    .ddr_cas_n (ddr_cas_n),
++    .ddr_ck_n (ddr_ck_n),
++    .ddr_ck_p (ddr_ck_p),
++    .ddr_cke (ddr_cke),
++    .ddr_cs_n (ddr_cs_n),
++    .ddr_dm (ddr_dm),
++    .ddr_dq (ddr_dq),
++    .ddr_dqs_n (ddr_dqs_n),
++    .ddr_dqs_p (ddr_dqs_p),
++    .ddr_odt (ddr_odt),
++    .ddr_ras_n (ddr_ras_n),
++    .ddr_reset_n (ddr_reset_n),
++    .ddr_we_n (ddr_we_n),
++    .enable (enable),
++    .fixed_io_ddr_vrn (fixed_io_ddr_vrn),
++    .fixed_io_ddr_vrp (fixed_io_ddr_vrp),
++    .fixed_io_mio (fixed_io_mio),
++    .fixed_io_ps_clk (fixed_io_ps_clk),
++    .fixed_io_ps_porb (fixed_io_ps_porb),
++    .fixed_io_ps_srstb (fixed_io_ps_srstb),
++    .gpio_i (gpio_i),
++    .gpio_o (gpio_o),
++    .gpio_t (gpio_t),
++    // .iic_main_scl_io (iic_scl),
++    // .iic_main_sda_io (iic_sda),
++    .rx_clk_in (rx_clk_in),
++    .rx_data_in (rx_data_in),
++    .rx_frame_in (rx_frame_in),
++
++    .spi0_clk_i (1'b0),
++    .spi0_clk_o (spi_clk),
++    .spi0_csn_0_o (spi_csn),
++    .spi0_csn_1_o (),
++    .spi0_csn_2_o (),
++    .spi0_csn_i (1'b1),
++    .spi0_sdi_i (spi_miso),
++    .spi0_sdo_i (1'b0),
++    .spi0_sdo_o (spi_mosi),
++
++    .pl_uart0_rxd(pl_uart0_rxd),
++    .pl_uart0_txd(pl_uart0_txd),
++
++    // .spi_clk_i(1'b0),
++    // .spi_clk_o(pl_spi_clk_o),
++    // .spi_csn_i(1'b1),
++    // .spi_csn_o(),
++    // .spi_sdi_i(pl_spi_miso),
++    // .spi_sdo_i(1'b0),
++    // .spi_sdo_o(pl_spi_mosi),
++
++    .tdd_ext_sync(pl_burst),
++    .txdata_o(pl_txdata),
++
++    .tx_clk_out (tx_clk_out),
++    .tx_data_out (tx_data_out),
++    .tx_frame_out (tx_frame_out),
++    .txnrx (txnrx),
++    .up_enable (gpio_o[15]),
++    .up_txnrx (gpio_o[16]));
++
++endmodule
+-- 
+2.34.1
+

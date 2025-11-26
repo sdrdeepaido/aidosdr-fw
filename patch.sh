@@ -1,6 +1,11 @@
 target=$1
 
-cp ./patch/0001-AidoSDR-hdl-2023_R2-Tag.patch ./plutosdr-fw/hdl
+if [ "$target" = "AidoSDR" ]; then
+    cp ./patch/0001-AidoSDR-hdl-2023_R2-Tag.patch ./plutosdr-fw/hdl/
+elif [ "$target" = "aidosdr_A1" ]; then
+    cp ./patch/${target}/*hdl.patch ./plutosdr-fw/hdl/
+fi
+
 cp ./patch/${target}/*linux.patch	./plutosdr-fw/linux
 cp ./patch/${target}/*buildroot.patch	./plutosdr-fw/buildroot
 cp ./patch/${target}/*scripts.patch ./plutosdr-fw/

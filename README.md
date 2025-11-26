@@ -41,15 +41,27 @@ sudo apt-get remove libfdt-de
         ```
 
 ### Export target
+
+   For AidoSDR
    ```sh
    export TARGET=AidoSDR
    ```
+   For aidosdr_A1
+   ```sh
+   export TARGET=aidosdr_A1
+   ```
 
-Enter the hdl directory and switch to the 2023_R2 branch
-```
+### Enter the hdl directory
+
+For AidoSDR
+```sh
 cd aidosdr-fw/plutosdr-fw/hdl
 git checkout 2023_R2
 cd ../../../
+```
+For aidosdr_A1
+```sh
+No processing required
 ```
 ### Patch
 
@@ -58,12 +70,15 @@ After completing the above steps, start to Patch.
 ```sh
 cd aidosdr-fw
 ```
-
+For AidoSDR
    ```sh
    
    sh patch.sh AidoSDR
    ```
-
+For aidosdr_A1
+```sh
+   sh patch.sh aidosdr_A1
+```
    
 
 If you patch is successfully applied, you can see the following information.
@@ -140,7 +155,7 @@ You will see the SD boot image in the build_sdimg folder. You can just  copy all
 
 ## Update Flash by DFU
 
-DFU mode is available for AidoSDR, you can update the flash through DFU mode. Set the jumper to Flash Boot mode. After the device is powered on, press the DFU button, you will see both LED indicators in the device turn green, and now you can update the flash. You need to go to the build folder first, and then plug the Micro USB into the OTG port. Then, run the following command.
+DFU mode is available for AidoSDR and aidosdr_A1, you can update the flash through DFU mode. Set the jumper to Flash Boot mode. After the device is powered on, press the DFU button, you will see both LED indicators in the device turn green, and now you can update the flash. You need to go to the build folder first, and then plug the Micro USB into the OTG port. Then, run the following command.
 
 ```sh
 sudo dfu-util -a firmware.dfu -D ./AidoSDR.dfu
