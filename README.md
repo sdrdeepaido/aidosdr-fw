@@ -1,4 +1,4 @@
-# AidoSDRpatch
+# AidoSDR & aidosdr_A1 patch
 This Repository is used to make AidoSDR software radio device firmware. 
 
 
